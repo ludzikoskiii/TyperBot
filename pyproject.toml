@@ -1,0 +1,9 @@
+[project]
+name = "typerbot"
+version = "0.1.0"
+description = "Analityczny generator kuponów piłkarskich oparty na modelu Dixona-Colesa"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
