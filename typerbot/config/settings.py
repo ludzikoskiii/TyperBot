@@ -17,11 +17,14 @@ MARKETS = ("1X2", "DC", "OU", "BTTS")
 
 @dataclass
 class ModelSettings:
-    last_matches: int = 15            # liczba ostatnich meczów drużyny
-    half_life_days: float = 90.0      # po ilu dniach mecz waży o połowę mniej
+    last_matches: int = 20            # liczba ostatnich meczów drużyny
+    half_life_days: float = 180.0     # po ilu dniach mecz waży o połowę mniej
     min_matches: int = 6              # poniżej – drużyna oznaczona "mało danych"
     xg_weight: float = 0.5            # udział xG w celu dopasowania (0 = tylko bramki)
-    dixon_coles: bool = True
+    dixon_coles: bool = True          # korekta niskich wyników (0:0, 1:0, 0:1, 1:1)
+    regularization: float = 10.0      # ściąganie siły drużyn do średniej ligi (mniej = model pewniejszy siebie)
+    new_team_prior: float = -0.15     # startowa siła beniaminka (poniżej średniej ligi)
+    max_goals: int = 10
 
 
 @dataclass
@@ -65,7 +68,7 @@ class SyncSettings:
     oddspapi_monthly_budget: int = 250    # łączny limit OddsPapi
     oddspapi_scores_monthly: int = 60     # z tego: wyniki meczów (Ekstraklasa)
     oddspapi_history_monthly: int = 40    # z tego: historia kursów do backtestu
-    csv_import: bool = False              # opcjonalne pliki CSV football-data.co.uk (domyślnie wyłączone)
+    csv_import: bool = True               # pliki CSV football-data.co.uk (sezon 2025/26, historyczne kursy)
     csv_seasons: int = 7
 
 

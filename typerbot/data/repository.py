@@ -367,11 +367,12 @@ def odds_view(rows: Iterable[sqlite3.Row], bookmaker: str = "") -> OddsView:
         real = [(b, p) for b, p in quotes if b not in PSEUDO_BOOKMAKERS]
         summary = dict((b, p) for b, p in quotes if b in PSEUDO_BOOKMAKERS)
         prices = [p for _, p in real]
-        if prices:
-            average[key] = round(sum(prices) / len(prices), 3)
-            best[key] = max(prices)
-        elif "avg" in summary:
+        if "avg" in summary:          # średnia z ok. 40 bukmacherów z plików CSV – dokładniejsza
             average[key] = summary["avg"]
+        elif prices:
+            average[key] = round(sum(prices) / len(prices), 3)
+        if prices:
+            best[key] = max(prices)
         if "max" in summary:
             best[key] = max(best.get(key, 0.0), summary["max"])
         books[key] = len(real)

@@ -144,6 +144,31 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (source, league_code, season)
     );
     """,
+    # --- v2: prognozy modelu i wyniki backtestów ---------------------------------
+    """
+    CREATE TABLE predictions (
+        match_id      INTEGER PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
+        created_at    TEXT NOT NULL,
+        lam_home      REAL NOT NULL,
+        lam_away      REAL NOT NULL,
+        rho           REAL NOT NULL,
+        probs         TEXT NOT NULL,
+        low_data_home INTEGER NOT NULL,
+        low_data_away INTEGER NOT NULL,
+        new_home      INTEGER NOT NULL DEFAULT 0,
+        new_away      INTEGER NOT NULL DEFAULT 0,
+        cross_league  INTEGER NOT NULL DEFAULT 0,
+        home_matches  INTEGER,
+        away_matches  INTEGER
+    );
+
+    CREATE TABLE backtest_runs (
+        id         INTEGER PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        config     TEXT NOT NULL,
+        summary    TEXT NOT NULL
+    );
+    """,
 ]
 
 

@@ -1,4 +1,4 @@
-"""Narzędzie wiersza poleceń (etap 1 – zanim powstanie interfejs graficzny).
+"""Narzędzie wiersza poleceń (do czasu interfejsu graficznego w etapie 4).
 
   python -m typerbot demo                 synchronizacja na danych syntetycznych
   python -m typerbot demo --awaria the_odds_api   (symulacja awarii źródła)
@@ -7,7 +7,10 @@
   python -m typerbot status               zużycie limitów i stan źródeł
   python -m typerbot mecze [--dni 3]      nadchodzące mecze z kursami
   python -m typerbot druzyny              dopasowania nazw do sprawdzenia
-  python -m typerbot csv wlacz|wylacz     opcjonalny import CSV (uzupełnia sezon 2025/26)
+  python -m typerbot csv wlacz|wylacz     import CSV z football-data.co.uk (domyślnie włączony)
+  python -m typerbot prognozy [--dni 3]   prognozy modelu dla nadchodzących meczów
+  python -m typerbot backtest [--ligi PL,EKS] [--sezony 2023,2024,2025]
+  python -m typerbot strojenie [--zapisz] dobór parametrów modelu na historii
 """
 
 from __future__ import annotations
@@ -147,9 +150,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
     service = SyncService(db, secrets, transport=transport, now=lambda: now, rate_limits=False)
     for league in service.leagues.all():
         service.leagues.set_enabled(league.code, league.code in ("PL", "EKS"))
-    if args.csv:
+    if args.bez_csv:
         settings = service.settings()
-        settings.sync.csv_import = True
+        settings.sync.csv_import = False
         service.settings_store.save(settings)
     _out(f"TRYB DEMO – dane syntetyczne, baza tymczasowa: {tmp / 'demo.db'}")
     if args.awaria:
@@ -168,6 +171,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
     print_aliases(service, "EKS")
     _out()
     print_review(service)
+    _predict(db, 4, now=now)
+    if args.backtest:
+        _backtest(db, args, current=service.current_season())
     db.close()
     return 0
 
@@ -230,13 +236,139 @@ def cmd_csv(args: argparse.Namespace) -> int:
     return 0
 
 
+def _predict(db: Database, days: int, now: datetime | None = None) -> None:
+    from typerbot.cli_model import print_predictions
+    from typerbot.services.predict import PredictionService
+
+    now = now or datetime.now(timezone.utc)
+    service = PredictionService(db, now=lambda: now)
+    model = service.fit(now)
+    if model is None:
+        _out("Brak danych do dopasowania modelu – uruchom najpierw synchronizację.")
+        return
+    print_predictions(service.predict_between(now, now + timedelta(days=days)), model.summary())
+
+
+def _has_history(db: Database) -> bool:
+    row = db.query_one("SELECT COUNT(*) FROM matches WHERE status = 'FINISHED' AND home_goals IS NOT NULL")
+    if row[0] < 200:
+        _out("Za mało historii meczów w bazie – uruchom najpierw: python -m typerbot sync")
+        return False
+    return True
+
+
+def _backtest(db: Database, args: argparse.Namespace, current: int) -> None:
+    from typerbot.cli_model import print_backtest
+    from typerbot.config.settings import SettingsStore
+    from typerbot.model.backtest import BacktestConfig, default_seasons, run_backtest, save_run
+
+    if not _has_history(db):
+        return
+    settings = SettingsStore(db).load()
+    leagues = [x.strip().upper() for x in args.ligi.split(",")] if args.ligi else [
+        r["code"] for r in db.query("SELECT code FROM leagues WHERE enabled = 1 AND is_cup = 0 ORDER BY sort_order")]
+    seasons = [int(x) for x in args.sezony.split(",")] if args.sezony else default_seasons(db, leagues, current)
+    coupon = settings.coupon
+    if args.tryb:
+        coupon.mode = args.tryb
+    if args.kurs:
+        coupon.target_odds = args.kurs
+    config = BacktestConfig(leagues=leagues, seasons=seasons, value_threshold=args.prog,
+                            odds_haircut=args.obnizka)
+
+    def progress(league, li, nl, wi, nw):
+        if wi % 10 == 0 and sys.stdout.isatty():
+            sys.stdout.write(f"\r  liczę: {league} ({li + 1}/{nl}), tydzień {wi + 1}/{nw}   ")
+            sys.stdout.flush()
+
+    result = run_backtest(db, config, settings.model, coupon, settings.tax, progress=progress)
+    if sys.stdout.isatty():
+        sys.stdout.write("\r" + " " * 60 + "\r")
+    save_run(db, result)
+    print_backtest(result, coupon)
+
+
+def cmd_tune(args: argparse.Namespace) -> int:
+    from typerbot.config.settings import SettingsStore
+    from typerbot.model.backtest import BacktestConfig, default_seasons
+    from typerbot.model.tuning import tune
+
+    service = _real_service()
+    db = service.db
+    if not _has_history(db):
+        return 1
+    store = SettingsStore(db)
+    settings = store.load()
+    leagues = [x.strip().upper() for x in args.ligi.split(",")] if args.ligi else [
+        r["code"] for r in db.query("SELECT code FROM leagues WHERE enabled = 1 AND is_cup = 0 ORDER BY sort_order")]
+    seasons = [int(x) for x in args.sezony.split(",")] if args.sezony else default_seasons(
+        db, leagues, service.current_season())
+    config = BacktestConfig(leagues=leagues, seasons=seasons)
+
+    def progress(i, n):
+        if sys.stdout.isatty():
+            sys.stdout.write(f"\r  sprawdzam ustawienia {i + 1}/{n}   ")
+            sys.stdout.flush()
+
+    results = tune(db, config, settings.model, progress=progress)
+    if sys.stdout.isatty():
+        sys.stdout.write("\r" + " " * 50 + "\r")
+    if not results:
+        _out("Brak danych do strojenia.")
+        return 1
+    market = results[0].market_log_loss
+    _out(f"Strojenie modelu – ligi {', '.join(leagues)}, sezony {', '.join(map(str, seasons))}"
+         + (f" (log-loss rynku: {market:.4f})" if market else ""))
+    _out(f"  {'Mecze':>6}{'Półokres':>10}{'Regular.':>10}{'Log-loss 1X2':>14}{'Brier':>8}{'Kalibracja':>12}{'LL O/U':>9}")
+    current = (settings.model.last_matches, settings.model.half_life_days, settings.model.regularization)
+    for r in results[:10]:
+        m = r.settings
+        mark = "  ← obecne" if (m.last_matches, m.half_life_days, m.regularization) == current else ""
+        _out(f"  {m.last_matches:>6}{m.half_life_days:>10g}{m.regularization:>10g}{r.log_loss:>14.4f}{r.brier:>8.4f}"
+             f"{100 * r.ece:>10.1f}pp{r.ou_log_loss:>9.4f}{mark}")
+    best = results[0].settings
+    if args.zapisz:
+        settings.model.last_matches = best.last_matches
+        settings.model.half_life_days = best.half_life_days
+        settings.model.regularization = best.regularization
+        store.save(settings)
+        _out(f"Zapisano: {best.last_matches} meczów, półokres {best.half_life_days:g} dni, "
+             f"regularyzacja {best.regularization:g}.")
+    else:
+        _out("Aby zapisać najlepsze ustawienia: python -m typerbot strojenie --zapisz")
+    return 0
+
+
+def cmd_predict(args: argparse.Namespace) -> int:
+    _predict(Database(db_path()), args.dni)
+    return 0
+
+
+def cmd_backtest(args: argparse.Namespace) -> int:
+    service = _real_service()
+    _backtest(service.db, args, service.current_season())
+    return 0
+
+
+def _add_backtest_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--ligi", help="np. PL,EKS (domyślnie włączone ligi krajowe)")
+    p.add_argument("--sezony", help="rok rozpoczęcia sezonu, np. 2023,2024 (domyślnie 3 ostatnie zakończone)")
+    p.add_argument("--tryb", choices=["probability", "value"], help="tryb doboru kuponów")
+    p.add_argument("--kurs", type=float, help="kurs docelowy kuponu")
+    p.add_argument("--prog", type=float, default=0.0, help="minimalna przewaga typu value, np. 0.05")
+    p.add_argument("--obnizka", type=float, default=0.0,
+                   help="obniżka kursów względem średniej rynkowej, np. 0.03 (wyższa marża Superbet)")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="typerbot", description="TyperBot – narzędzia danych (etap 1)")
+    parser = argparse.ArgumentParser(prog="typerbot", description="TyperBot – dane, model i backtest")
     sub = parser.add_subparsers(dest="cmd")
 
     p = sub.add_parser("demo", help="synchronizacja na danych syntetycznych (bez kluczy i internetu)")
     p.add_argument("--awaria", action="append", choices=list(SOURCE_LABELS), help="symuluj awarię źródła")
-    p.add_argument("--csv", action="store_true", help="włącz opcjonalny import CSV z football-data.co.uk")
+    p.add_argument("--bez-csv", action="store_true", help="wyłącz import CSV z football-data.co.uk")
+    p.add_argument("--backtest", action="store_true", help="uruchom też backtest modelu na danych demo")
+    _add_backtest_args(p)
     p.set_defaults(func=cmd_demo)
 
     p = sub.add_parser("klucz", help="zapisz lub usuń klucz API")
@@ -256,9 +388,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dni", type=int, default=3)
     p.set_defaults(func=cmd_matches)
 
-    p = sub.add_parser("csv", help="włącz/wyłącz opcjonalny import plików CSV (uzupełnia historię)")
+    p = sub.add_parser("csv", help="włącz/wyłącz import plików CSV z football-data.co.uk")
     p.add_argument("stan", choices=["wlacz", "wylacz"])
     p.set_defaults(func=cmd_csv)
+
+    p = sub.add_parser("prognozy", help="prognozy modelu dla nadchodzących meczów")
+    p.add_argument("--dni", type=int, default=3)
+    p.set_defaults(func=cmd_predict)
+
+    p = sub.add_parser("backtest", help="test modelu na historycznych sezonach")
+    _add_backtest_args(p)
+    p.set_defaults(func=cmd_backtest)
+
+    p = sub.add_parser("strojenie", help="dobór parametrów modelu na historii (siatka + backtest)")
+    p.add_argument("--ligi")
+    p.add_argument("--sezony")
+    p.add_argument("--zapisz", action="store_true", help="zapisz najlepsze ustawienia")
+    p.set_defaults(func=cmd_tune)
 
     p = sub.add_parser("druzyny", help="dopasowania nazw drużyn")
     p.add_argument("--liga", help="pokaż wszystkie nazwy w lidze, np. EKS")

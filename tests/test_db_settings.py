@@ -33,7 +33,7 @@ def test_settings_roundtrip_and_defaults(db):
     s = store.load()
     assert s.tax.stake_tax == 0.12 and s.tax.win_tax_threshold == 2280.0
     assert s.odds.bookmaker == "superbet" and s.odds.reference == "bookmaker"
-    assert s.sync.csv_import is False
+    assert s.sync.csv_import is True
     s.coupon.target_odds = 7.5
     s.model.last_matches = 12
     store.save(s)

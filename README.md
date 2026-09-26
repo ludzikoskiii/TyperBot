@@ -13,8 +13,8 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 | Etap | Zakres | Stan |
 |---|---|---|
 | 1 | Źródła danych, pobieranie, baza SQLite, cache, limity API | **gotowy** |
-| 2 | Model prognoz (Dixon-Coles) i backtest | następny |
-| 3 | Ocena typów (marża, podatek, EV) i generator kuponu | – |
+| 2 | Model prognoz (Dixon-Coles), backtest, strojenie parametrów | **gotowy** |
+| 3 | Ocena typów (marża, podatek, EV) i generator kuponu | następny (rdzeń optymalizatora już jest) |
 | 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | – |
 | 5 | Kontrola budżetu, dopracowanie, plik .exe | – |
 
@@ -40,7 +40,7 @@ Do czasu interfejsu graficznego (etap 4) aplikację obsługuje się z wiersza po
    ```powershell
    python -m typerbot demo
    python -m typerbot demo --awaria the_odds_api   # symulacja awarii jednego źródła
-   python -m typerbot demo --csv                   # z opcjonalnym importem CSV
+   python -m typerbot demo --backtest              # + prognozy i backtest modelu na danych demo
    ```
 
 4. Uruchom testy: `python -m pytest`.
@@ -68,6 +68,10 @@ python -m typerbot sync --force    # pominięcie cache
 python -m typerbot status          # zużycie limitów każdego API i stan źródeł
 python -m typerbot mecze --dni 3   # nadchodzące mecze z kursami Superbet (w nawiasie średnia rynkowa)
 python -m typerbot druzyny --liga EKS   # jak nazwy drużyn z różnych źródeł zostały połączone
+python -m typerbot prognozy --dni 3     # prognozy modelu dla nadchodzących meczów
+python -m typerbot backtest             # test modelu na 3 ostatnich zakończonych sezonach
+python -m typerbot backtest --ligi PL,EKS --sezony 2023,2024,2025 --tryb value --kurs 3
+python -m typerbot strojenie --zapisz   # dobór parametrów modelu na Twojej historii
 ```
 
 Baza i logi: `%LOCALAPPDATA%\TyperBot\` (`typerbot.db`, `typerbot.log`).
@@ -80,7 +84,7 @@ Baza i logi: `%LOCALAPPDATA%\TyperBot\` (`typerbot.db`, `typerbot.log`).
 | **football-data.org** | 10 zapytań/min; tylko **bieżący sezon** | terminarz i wyniki: Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Liga Mistrzów |
 | **OddsPapi** | 250 zapytań/miesiąc | kursy **Superbet** (1 zapytanie na wiele lig), terminarz i wyniki Ekstraklasy, historia kursów |
 | **The Odds API** | 500 kredytów/miesiąc (koszt = rynki × regiony) | kursy wielu bukmacherów → **średnia rynkowa**; BTTS i podwójna szansa dla kandydatów na kupon |
-| football-data.co.uk (CSV) | bez limitu | **opcjonalnie, domyślnie wyłączone** – uzupełnienie historii |
+| **football-data.co.uk** (pliki CSV) | bez limitu | wyniki, strzały i kursy (przedmeczowe i zamknięcia) z 7 sezonów – historia do modelu i **backtestu z kursami**, w tym sezon 2025/26 |
 
 Jak oszczędzamy limity:
 - wszystko trafia do SQLite, zakończone sezony pobierane są tylko raz, odpowiedzi API są w cache;
@@ -95,15 +99,56 @@ dane z cache.
 
 ### Znane ograniczenie planów darmowych
 
-Żadne darmowe API nie udostępnia hurtowo **sezonu 2025/26**: API-Football kończy się na 2024/25,
-a football-data.org ma tylko sezon bieżący. W efekcie na początku sezonu (do ok. listopada)
-model ma mniej „ostatnich meczów” na drużynę. Historię kursów do backtestu da się pobrać
-za darmo tylko w małych porcjach (OddsPapi: 1 zapytanie na mecz). Dlatego aplikacja zapisuje
-kursy każdego obserwowanego meczu i z czasem sama buduje własną historię.
+Żadne darmowe API nie udostępnia hurtowo **sezonu 2025/26** (API-Football kończy się na 2024/25,
+football-data.org ma tylko sezon bieżący), a historię kursów da się pobrać z API tylko w małych
+porcjach. Dlatego domyślnie włączony jest import plików CSV z football-data.co.uk – uzupełnia
+lukę i daje historyczne kursy do backtestu. Wyłączenie: `python -m typerbot csv wylacz`.
+Niezależnie od tego aplikacja zapisuje kursy każdego obserwowanego meczu i z czasem buduje
+własną historię.
 
-Jeśli chcesz uzupełnić lukę od razu, możesz włączyć import plików CSV z football-data.co.uk
-(wyniki, strzały i kursy zamknięcia z wielu sezonów, bez klucza):
-`python -m typerbot csv wlacz`.
+## Model prognoz
+
+**Dixon-Coles** – liczba goli każdej drużyny ma rozkład Poissona zależny od:
+siły ataku i obrony obu drużyn, przewagi własnego boiska i ogólnego poziomu bramek w lidze.
+Korekta ρ poprawia prawdopodobieństwa wyników 0:0, 1:0, 0:1 i 1:1.
+
+- **Okno danych:** N ostatnich meczów każdej drużyny (domyślnie 20).
+- **Wygaszanie:** mecz sprzed „półokresu” (domyślnie 180 dni) waży o połowę mniej.
+- **xG:** gdy jest dostępne, cel dopasowania to mieszanka bramek i xG (domyślnie 50/50).
+- **Regularyzacja:** siła drużyn jest łagodnie ściągana do średniej ligi (domyślnie 10).
+  Bez tego model „wierzy” w przypadkowe serie i jest zbyt pewny siebie – backtest to pokazał
+  (przy słabej regularyzacji typy „70–80%” trafiały w ok. 54%).
+- **„Mało danych”:** mniej niż 6 meczów w ostatnim roku albo beniaminek bez historii w lidze;
+  beniaminek startuje z siłą nieco poniżej średniej ligi. Takie drużyny domyślnie nie trafiają na kupon.
+- **Liga Mistrzów:** wspólny model wszystkich lig z parametrem siły każdej ligi, szacowanym z meczów
+  pucharowych. Mecz drużyn z różnych lig jest oznaczony jako „niższa pewność”.
+
+Z macierzy wyników (0–10 bramek) liczone są wszystkie rynki: 1X2, podwójna szansa,
+powyżej/poniżej 2,5 i obie strzelą.
+
+## Backtest – jak czytać wynik
+
+Backtest symuluje używanie aplikacji w przeszłości: **przed każdym tygodniem** model uczy się
+tylko na meczach wcześniejszych i prognozuje mecze z tego tygodnia (brak „podglądania przyszłości”
+sprawdza test automatyczny). Raport ma cztery części:
+
+1. **Skuteczność** – trafność, log-loss i Brier (niższe = lepiej) w porównaniu z rynkiem
+   (prawdopodobieństwa z kursów zamknięcia po usunięciu marży). Rynek to bardzo silny punkt
+   odniesienia – jeśli model ma wyższy log-loss, to rynek prognozuje lepiej.
+2. **Kalibracja** – dla przedziałów 0–10%, 10–20%, … porównanie przewidywanej i faktycznej
+   częstości; ECE to średni błąd w punktach procentowych.
+3. **Wynik finansowy** (po 12% podatku) – pojedyncze typy „value” (także z podziałem na rynki,
+   ligi i wielkość przewagi) oraz symulowane kupony o zadanym kursie (1 na tydzień).
+   Przy kuponach porównywana jest szansa trafienia wg modelu, wg rynku i faktyczna.
+4. **Model a rynek** – log-loss mieszanki „w·model + (1−w)·rynek”. Jeśli najlepsze jest 0% modelu,
+   model nie wnosi nic ponad kursy, a jego „value” to głównie błędy.
+
+Kursy podwójnej szansy w danych historycznych są wyliczane z kursów 1X2, a dla BTTS nie ma
+historycznych kursów – te rynki mają ocenę trafności i kalibracji, BTTS bez wyniku finansowego.
+
+`python -m typerbot strojenie` sprawdza siatkę 36 ustawień (liczba meczów × półokres ×
+regularyzacja) na Twojej historii i wybiera najlepsze według log-loss (nie według zysku –
+zysk w backteście jest zbyt zaszumiony i łatwo go „przeuczyć”).
 
 ## Struktura projektu
 
@@ -117,7 +162,19 @@ typerbot/
 │   ├── teams.py, team_seeds.py dopasowanie nazw drużyn między źródłami
 │   ├── repository.py           zapis meczów i kursów, łączenie meczów z kilku źródeł
 │   └── sources/                football_data_org, api_football, oddspapi, the_odds_api, football_data_csv
+├── model/
+│   ├── dixon_coles.py          dopasowanie modelu (gradient analityczny, L-BFGS), macierz wyników
+│   ├── data.py                 okno ostatnich meczów, wagi czasowe, xG, „mało danych”, beniaminki
+│   ├── predictor.py            prognozy meczów, siła lig (Liga Mistrzów)
+│   ├── markets.py              1X2, podwójna szansa, powyżej/poniżej, obie strzelą
+│   ├── backtest.py             walk-forward, metryki, kalibracja, symulacja finansowa
+│   └── tuning.py               strojenie parametrów
+├── betting/
+│   ├── odds.py                 marża, prawdopodobieństwo implikowane, podatek, EV
+│   ├── settlement.py           rozstrzyganie typów
+│   ├── coupon.py, optimizer.py kandydaci i optymalizator kuponu (programowanie dynamiczne)
 ├── services/sync.py            synchronizacja z izolacją błędów źródeł
+├── services/predict.py         prognozy nadchodzących meczów (zapis w bazie)
 ├── demo/                       syntetyczny świat meczów i transport udający API
 └── cli.py                      polecenia wiersza poleceń
 tests/                          testy jednostkowe i integracyjne (pytest)
