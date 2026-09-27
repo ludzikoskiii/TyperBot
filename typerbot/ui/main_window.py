@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QMainWindow, QPushButton, QTabWidget, QVBoxLayout, QWidget
 
 from typerbot import __version__
 from typerbot.data.errors import STATE_LABELS
 from typerbot.fmt import plural
 from typerbot.services.sync import SyncReport
+from typerbot.services.budget import EXCEEDED
 from typerbot.ui import theme
+from typerbot.ui.budget_widget import HELP, BudgetWidget
 from typerbot.ui.context import AppContext
 from typerbot.ui.tab_coupons import CouponsTab
 from typerbot.ui.tab_generator import GeneratorTab
@@ -45,14 +47,23 @@ class MainWindow(QMainWindow):
                               (self.settings, "Ustawienia")):
             self.tabs.addTab(widget, title)
 
+        self.budget = BudgetWidget(ctx)
+        self.tabs.setCornerWidget(self.budget, Qt.TopRightCorner)
+
         self.banner = QFrame()
         self.banner.setProperty("role", "banner")
         bl = QHBoxLayout(self.banner)
         self.banner_text = label("", "warning", wrap=True)
         bl.addWidget(self.banner_text)
+        self.budget_banner = QFrame()
+        self.budget_banner.setProperty("role", "alert")
+        bbl = QHBoxLayout(self.budget_banner)
+        self.budget_banner_text = label("", "negative", wrap=True)
+        bbl.addWidget(self.budget_banner_text)
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addWidget(self.banner)
+        lay.addWidget(self.budget_banner)
         lay.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
         self._update_banner()
@@ -73,6 +84,9 @@ class MainWindow(QMainWindow):
         ctx.hub.message.connect(self.message_label.setText)
         ctx.hub.busy.connect(self._on_busy)
         ctx.hub.settings_changed.connect(self._on_settings)
+        for signal in (ctx.hub.coupons_changed, ctx.hub.settings_changed):
+            signal.connect(self._update_budget_banner)
+        self._update_budget_banner()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self._on_settings()
@@ -96,6 +110,14 @@ class MainWindow(QMainWindow):
             self.banner.show()
         else:
             self.banner.hide()
+
+    def _update_budget_banner(self) -> None:
+        st = self.budget.status
+        if st and st.level == EXCEEDED:
+            self.budget_banner_text.setText(st.warning() + " Rozważ przerwę do końca miesiąca. " + HELP)
+            self.budget_banner.show()
+        else:
+            self.budget_banner.hide()
 
     def _on_settings(self) -> None:
         hours = self.ctx.settings().sync.fixtures_every_hours

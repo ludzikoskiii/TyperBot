@@ -16,7 +16,7 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 | 2 | Model prognoz (Dixon-Coles), backtest, strojenie parametrów | **gotowy** |
 | 3 | Ocena typów (marża, podatek, EV) i generator kuponu | **gotowy** |
 | 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | **gotowy** |
-| 5 | Kontrola budżetu, dopracowanie, plik .exe | następny |
+| 5 | Kontrola budżetu, dopracowanie, plik .exe | **gotowy** |
 
 ## Uruchomienie na Windows
 
@@ -39,6 +39,14 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
    python -m typerbot gui --demo   # interfejs w trybie demo – bez kluczy i internetu (dane syntetyczne)
    ```
 
+   Później wystarczy dwuklik na **`uruchom.bat`** (start bez okna konsoli).
+4. Wpisz klucze API w zakładce **Ustawienia** (opis niżej) i kliknij **Odśwież dane**.
+   **Pierwsza synchronizacja trwa kilka minut** – pobiera 7 sezonów historii (pliki CSV), sezony
+   2022–2024 z API-Football i xG w ramach dziennego limitu. Postęp widać w pasku stanu na dole;
+   kolejne odświeżenia trwają kilka sekund.
+5. W zakładce **Statystyki → Backtest modelu** kliknij **Strojenie parametrów**, a potem
+   **Zapisz najlepsze ustawienia** – model i udział modelu w prognozie zostaną dobrane do Twoich danych.
+
    Tryb demo w wierszu poleceń (raport tekstowy):
 
    ```powershell
@@ -47,7 +55,15 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
    python -m typerbot demo --backtest              # + prognozy i backtest modelu na danych demo
    ```
 
-4. Uruchom testy: `python -m pytest`.
+Testy: `python -m pytest` (ok. 3 minuty; obejmują też interfejs).
+
+## Plik .exe (bez instalowania Pythona)
+
+Na komputerze z Pythonem uruchom **`zbuduj_exe.bat`** – zbuduje folder `dist\TyperBot` z plikiem
+`TyperBot.exe` (ok. 300 MB, bo zawiera Pythona, Qt i biblioteki obliczeniowe) i od razu uruchomi
+test `TyperBot.exe --self-test`. Folder można skopiować na inny komputer z Windows 10/11.
+`TyperBot.exe --demo` otwiera tryb demo. Dane i ustawienia są w `%LOCALAPPDATA%\TyperBot\`
+– wspólne dla `.exe` i uruchamiania z Pythona.
 
 ## Interfejs
 
@@ -62,6 +78,20 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 Pasek stanu pokazuje każde źródło danych (zielona kropka = OK, w podpowiedzi szczegóły i pozostały limit).
 Dane odświeżają się w tle przy starcie i co 3 godziny (przycisk **Odśwież dane** – od razu); przy okazji
 rozliczają się zakończone kupony. Wszystkie obliczenia i pobieranie działają w tle – okno się nie zawiesza.
+W „Moje kupony” jest **Eksportuj do CSV…** (plik otwiera się w polskim Excelu).
+
+## Kontrola budżetu
+
+- **Miesięczny limit stawek** ustawiasz w *Ustawienia → Budżet* (domyślnie 200 zł, 0 = bez limitu)
+  razem z progiem ostrzeżenia (domyślnie 80% limitu).
+- W prawym górnym rogu okna stale widać **wydatki i bilans bieżącego miesiąca** z paskiem wykorzystania
+  limitu: zielony, pomarańczowy od progu ostrzeżenia, czerwony po przekroczeniu. W podpowiedzi: kwota
+  w grze, liczba kuponów, ile zostało do limitu.
+- Zapis kuponu, który przekroczy limit, wymaga **potwierdzenia**; po przekroczeniu nad zakładkami
+  pojawia się czerwony komunikat.
+- Miesiąc liczony jest w czasie polskim: *wydano* = stawki kuponów postawionych w miesiącu (także
+  w grze), *wypłaty* = wypłaty rozliczone w miesiącu, *bilans* = wypłaty − wydano.
+- W wierszu poleceń: `python -m typerbot budzet` (podsumowanie), `python -m typerbot budzet --limit 300`.
 
 ## Klucze API
 
@@ -210,6 +240,28 @@ regularyzacja) na Twojej historii i wybiera najlepsze według log-loss (nie wed�
 zysk w backteście jest zbyt zaszumiony i łatwo go „przeuczyć”). Podaje też najlepszy udział
 modelu w mieszance z rynkiem; `--zapisz` zapisuje wszystko w ustawieniach.
 
+## Wiersz poleceń
+
+Wszystko, co robi interfejs, jest też dostępne jako polecenia (`python -m typerbot --help`):
+`sync`, `status`, `mecze`, `prognozy`, `typy`, `kupon`, `backtest`, `strojenie`, `budzet`, `klucz`,
+`csv`, `druzyny`, `demo`, `gui`.
+
+## Rozwiązywanie problemów
+
+| Objaw | Co zrobić |
+|---|---|
+| Szara kropka źródła, „Brak klucza API” | wpisz klucz w Ustawieniach i kliknij Odśwież dane |
+| Czerwona kropka, „Nieprawidłowy klucz” | sprawdź klucz (bez spacji); dla The Odds API – czy nie wyczerpał się miesięczny limit |
+| „Niedostępne w planie darmowym” przy API-Football | normalne dla bieżącego sezonu – aplikacja korzysta wtedy z innych źródeł; zakres dostępnych sezonów zapamiętuje sama |
+| Pomarańczowa kropka, „Brak połączenia” | aplikacja pokazuje dane z cache; sprawdź internet i odśwież później |
+| Brak meczów lub kursów w generatorze | kliknij Odśwież dane; kursy są pobierane tylko dla lig z meczami w wybranym zakresie dat |
+| Ta sama drużyna pod dwiema nazwami | *Ustawienia → Dopasowanie nazw drużyn → Połącz z inną drużyną…* |
+| Coś działa nie tak | log błędów: `%LOCALAPPDATA%\TyperBot\typerbot.log` |
+
+Źródło OddsPapi (kursy Superbet) jest zaimplementowane według dokumentacji API; identyfikatory rynków
+i nazwę bukmachera aplikacja ustala automatycznie. Gdyby kursy Superbet się nie pojawiały, ocena typów
+korzysta ze średniej rynkowej (kolumna „Źródło” pokaże „średnia”).
+
 ## Struktura projektu
 
 ```
@@ -240,8 +292,11 @@ typerbot/
 ├── services/coupons.py         generator kuponów, wymiana zdarzeń, kurs ręczny
 ├── services/register.py        rejestr postawionych kuponów i automatyczne rozliczanie
 ├── services/stats.py           bilans, ROI, trafność – ogółem, miesiące, rynki, ligi
+├── services/budget.py          miesięczny limit stawek, wydatki i bilans miesiąca
 ├── ui/                         interfejs PySide6: okno, 5 zakładek, wykresy, motyw, zadania w tle
 ├── demo/                       syntetyczny świat meczów i transport udający API
 └── cli.py                      polecenia wiersza poleceń
-tests/                          testy jednostkowe i integracyjne (pytest)
+packaging/                      konfiguracja PyInstaller (TyperBot.exe)
+tests/                          testy jednostkowe, integracyjne i interfejsu (pytest)
+uruchom.bat, zbuduj_exe.bat     skróty dla Windows
 ```

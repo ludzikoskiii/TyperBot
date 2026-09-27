@@ -200,9 +200,13 @@ class SettingsTab(QWidget):
 
         budget_box = QGroupBox("Budżet")
         self.monthly_limit = _dspin(0, 1_000_000, 2, 10, " zł")
+        self.warn_at = _spin(10, 100, " % limitu")
         bf = QFormLayout(budget_box)
         bf.addRow("Miesięczny limit stawek", self.monthly_limit)
-        bf.addRow(label("Po przekroczeniu limitu aplikacja ostrzega przy zapisie kuponu.", "muted", wrap=True))
+        bf.addRow("Ostrzegaj od", self.warn_at)
+        bf.addRow(label("0 zł = bez limitu. Aplikacja pokazuje wydatki i bilans miesiąca w prawym górnym rogu, "
+                        "ostrzega przy zapisie kuponu ponad limit i wyświetla czerwony komunikat po jego "
+                        "przekroczeniu.", "muted", wrap=True))
 
         quota_box = QGroupBox("Limity API")
         self.quota_table = make_table(["Źródło", "Okres", "Zużyte", "Limit", "Zostało", "Dziś zapytań", "Stan"],
@@ -301,6 +305,7 @@ class SettingsTab(QWidget):
         self.papi_budget.setValue(s.sync.oddspapi_monthly_budget)
         self.papi_scores.setValue(s.sync.oddspapi_scores_monthly)
         self.monthly_limit.setValue(s.budget.monthly_limit)
+        self.warn_at.setValue(round(s.budget.warn_at * 100))
 
     def collect(self) -> Settings:
         s = self.ctx.settings()
@@ -329,6 +334,7 @@ class SettingsTab(QWidget):
         s.sync.oddspapi_monthly_budget = self.papi_budget.value()
         s.sync.oddspapi_scores_monthly = self.papi_scores.value()
         s.budget.monthly_limit = self.monthly_limit.value()
+        s.budget.warn_at = self.warn_at.value() / 100
         s.coupon.markets = [m for m in s.coupon.markets if m in s.markets_enabled] or list(s.markets_enabled)
         return s
 

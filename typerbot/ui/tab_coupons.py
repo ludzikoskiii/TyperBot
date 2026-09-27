@@ -5,13 +5,14 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLineEdit, QMessageBox, QPushButton,
-    QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QLineEdit, QMessageBox,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
 from typerbot.fmt import num, pct, plural, signed_pct
 from typerbot.services.coupons import kickoff_local
-from typerbot.services.register import LOST, PENDING, STATUS_LABELS, VOID, WON, StoredCoupon
+from typerbot.services.budget import BudgetService
+from typerbot.services.register import LOST, PENDING, STATUS_LABELS, VOID, WON, StoredCoupon, export_csv
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
 from typerbot.ui.widgets import NumItem, hbox, label, make_table, profit_color, text_item
@@ -107,11 +108,12 @@ class CouponsTab(QWidget):
         self.details_btn = QPushButton("Szczegóły")
         self.manual_btn = QPushButton("Rozlicz ręcznie…")
         self.delete_btn = QPushButton("Usuń")
+        self.export_btn = QPushButton("Eksportuj do CSV…")
         self.table = make_table(COLUMNS, stretch=3)
         lay = QVBoxLayout(self)
         lay.addLayout(hbox(label("Pokaż:"), self.filter, None, self.summary))
         lay.addWidget(self.table, 1)
-        lay.addLayout(hbox(self.details_btn, self.manual_btn, self.delete_btn, None, self.settle_btn))
+        lay.addLayout(hbox(self.details_btn, self.manual_btn, self.delete_btn, self.export_btn, None, self.settle_btn))
         lay.addWidget(label("Kupony rozliczają się same po zakończeniu meczów (wynik po 90 minutach; mecz odwołany "
                             "lub przełożony o ponad 48 h liczony po kursie 1,00).", "muted", wrap=True))
         self.filter.currentIndexChanged.connect(self.reload)
@@ -119,6 +121,7 @@ class CouponsTab(QWidget):
         self.details_btn.clicked.connect(self.details)
         self.manual_btn.clicked.connect(self.manual)
         self.delete_btn.clicked.connect(self.delete)
+        self.export_btn.clicked.connect(self.export)
         self.table.doubleClicked.connect(lambda _: self.details())
         ctx.hub.coupons_changed.connect(self.reload)
         ctx.hub.data_changed.connect(self.reload)
@@ -154,8 +157,18 @@ class CouponsTab(QWidget):
                 t.item(r, 9).setForeground(QBrush(QColor(color)))
         t.setSortingEnabled(True)
         totals = self.ctx.stats.totals()
+        month = BudgetService(self.ctx.db, now=self.ctx.now).status()
         self.summary.setText(f"Kuponów: {totals.coupons} · w grze: {totals.pending} ({num(totals.pending_stake)} zł) · "
-                             f"bilans rozliczonych: {totals.profit:+.2f} zł".replace(".", ","))
+                             f"bilans rozliczonych: {totals.profit:+.2f} zł".replace(".", ",") + f" · {month.summary()}")
+
+    def export(self, path: str | None = None) -> int:
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Eksport kuponów", "kupony.csv", "CSV (*.csv)")
+            if not path:
+                return 0
+        rows = export_csv(self.ctx.register.list(), path)
+        self.ctx.hub.message.emit(f"Wyeksportowano {plural(rows, 'zdarzenie', 'zdarzenia', 'zdarzeń')} do {path}")
+        return rows
 
     def selected(self) -> StoredCoupon | None:
         rows = self.table.selectionModel().selectedRows()

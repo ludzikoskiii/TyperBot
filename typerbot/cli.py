@@ -13,6 +13,7 @@
   python -m typerbot strojenie [--zapisz] dobór parametrów modelu na historii
   python -m typerbot typy [--dni 3] [--value]   ocena typów (prognoza, kurs, EV, value)
   python -m typerbot kupon [--kurs 5] [--dni 3] [--tryb value] [--wymien A2 --na 3]
+  python -m typerbot budzet [--limit 300] wydatki i bilans miesiąca, limit stawek
 """
 
 from __future__ import annotations
@@ -402,6 +403,27 @@ def _add_backtest_args(p: argparse.ArgumentParser) -> None:
                    help="obniżka kursów względem średniej rynkowej, np. 0.03 (wyższa marża Superbet)")
 
 
+def cmd_budget(args: argparse.Namespace) -> int:
+    from typerbot.config.settings import SettingsStore
+    from typerbot.services.budget import BudgetService
+
+    db = Database(db_path())
+    if args.limit is not None:
+        store = SettingsStore(db)
+        settings = store.load()
+        settings.budget.monthly_limit = max(0.0, args.limit)
+        store.save(settings)
+        _out(f"Ustawiono miesięczny limit stawek: {args.limit:.2f} zł".replace(".", ","))
+    st = BudgetService(db).status()
+    _out(st.summary())
+    _out(f"W grze: {st.pending_stake:.2f} zł · kuponów w miesiącu: {st.coupons}".replace(".", ","))
+    if st.limit > 0:
+        _out(f"Zostało do limitu: {max(0.0, st.remaining):.2f} zł".replace(".", ","))
+    if st.warning():
+        _out("UWAGA: " + st.warning())
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from typerbot.ui.app import run
 
@@ -411,6 +433,10 @@ def cmd_gui(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="typerbot", description="TyperBot – dane, model i backtest")
     sub = parser.add_subparsers(dest="cmd")
+
+    p = sub.add_parser("budzet", help="wydatki i bilans bieżącego miesiąca, limit stawek")
+    p.add_argument("--limit", type=float, help="ustaw miesięczny limit (0 = bez limitu)")
+    p.set_defaults(func=cmd_budget)
 
     p = sub.add_parser("gui", help="interfejs graficzny (to samo co uruchomienie bez argumentów)")
     p.add_argument("--demo", action="store_true", help="tryb demo – dane syntetyczne, bez kluczy")

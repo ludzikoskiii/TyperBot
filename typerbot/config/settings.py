@@ -80,7 +80,8 @@ class SyncSettings:
 
 @dataclass
 class BudgetSettings:
-    monthly_limit: float = 200.0
+    monthly_limit: float = 200.0      # 0 = bez limitu
+    warn_at: float = 0.8              # ostrzeżenie po wykorzystaniu 80% limitu
     currency: str = "PLN"
 
 

@@ -246,3 +246,27 @@ class CouponRegister:
             "SELECT DISTINCT l.league_code FROM coupon_legs l JOIN matches m ON m.id = l.match_id "
             "WHERE l.result = ? AND m.kickoff < ?", (PENDING, to_iso(self._now() - timedelta(hours=2))))
         return {r["league_code"] for r in rows}
+
+
+def export_csv(coupons: list[StoredCoupon], path: str) -> int:
+    """Eksport kuponów (wiersz na zdarzenie) do CSV otwieranego w polskim Excelu (średniki, UTF-8 z BOM)."""
+    import csv
+
+    def dec(x: float | None, digits: int = 2) -> str:
+        return "" if x is None else f"{x:.{digits}f}".replace(".", ",")
+
+    rows = 0
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.writer(fh, delimiter=";")
+        w.writerow(["Nr kuponu", "Postawiono", "Bukmacher", "Stawka", "Kurs łączny", "Status", "Wypłata", "Zysk",
+                    "Szansa (prognoza)", "EV", "Data meczu", "Liga", "Mecz", "Typ", "Kurs typu", "Prognoza typu",
+                    "Wynik meczu", "Rozstrzygnięcie", "Notatka"])
+        for c in coupons:
+            for leg in c.legs:
+                w.writerow([c.id, c.placed_at.replace("T", " ").rstrip("Z"), c.bookmaker, dec(c.stake), dec(c.odds),
+                            c.status_label, dec(c.payout), dec(c.profit), dec(c.probability, 4), dec(c.ev, 4),
+                            leg.kickoff.replace("T", " ").rstrip("Z"), leg.league, f"{leg.home} – {leg.away}",
+                            leg.label, dec(leg.odds), dec(leg.probability, 4), leg.score,
+                            STATUS_LABELS.get(leg.result, leg.result), c.note])
+                rows += 1
+    return rows

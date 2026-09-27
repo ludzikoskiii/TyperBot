@@ -5,9 +5,18 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from typerbot.data.db import Database
+from typerbot.data.records import parse_iso
 from typerbot.services.register import LOST, PENDING, VOID, WON, CouponRegister, StoredCoupon
+
+LOCAL = ZoneInfo("Europe/Warsaw")
+
+
+def local_month(iso: str) -> str:
+    return parse_iso(iso).astimezone(LOCAL).strftime("%Y-%m")
+
 
 MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "OU": "Powyżej/poniżej", "BTTS": "Obie strzelą"}
 
@@ -119,7 +128,7 @@ class StatsService:
     def by_month(self, coupons: list[StoredCoupon] | None = None) -> list[MonthRow]:
         rows: dict[str, MonthRow] = {}
         for c in coupons if coupons is not None else self.coupons():
-            month = c.placed_at[:7]
+            month = local_month(c.placed_at)
             row = rows.setdefault(month, MonthRow(month, 0, 0.0, 0.0, 0.0))
             row.coupons += 1
             row.staked_all += c.stake
@@ -129,7 +138,7 @@ class StatsService:
         return [rows[k] for k in sorted(rows, reverse=True)]
 
     def current_month(self) -> MonthRow:
-        month = self._now().strftime("%Y-%m")
+        month = self._now().astimezone(LOCAL).strftime("%Y-%m")
         return next((r for r in self.by_month() if r.month == month), MonthRow(month, 0, 0.0, 0.0, 0.0))
 
     def _groups(self, key, coupons: list[StoredCoupon] | None) -> list[GroupRow]:

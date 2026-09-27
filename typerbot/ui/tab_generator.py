@@ -15,12 +15,13 @@ from PySide6.QtWidgets import (
 from typerbot.config.settings import MARKETS, CouponSettings
 from typerbot.fmt import num, pct, plural, signed_pct
 from typerbot.services.coupons import Coupon, CouponService, SwapOption, kickoff_local
+from typerbot.services.budget import BudgetService
 from typerbot.services.register import LegInput
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
 from typerbot.ui.widgets import (
     KpiTile, NumItem, ProbabilityDelegate, fill_row_background, hbox, label, make_table, prob_item, profit_role,
-    text_item,
+    set_role, text_item,
 )
 from typerbot.ui.workers import run_in_background
 
@@ -128,15 +129,19 @@ class SaveCouponDialog(QDialog):
         value = payout(self.stake.value(), self.odds.value(), tax)
         self.preview.setText(f"Możliwa wygrana: {num(value)} zł (po podatku). "
                              f"Szansa trafienia wg prognozy: {pct(self.coupon.probability, 1)}.")
-        settings = self.ctx.settings()
-        month = self.ctx.stats.current_month()
-        limit = settings.budget.monthly_limit
-        after = month.staked_all + self.stake.value()
-        if limit and after > limit:
-            self.budget.setText(f"Uwaga: po tym kuponie stawki w tym miesiącu wyniosą {num(after)} zł "
-                                f"– powyżej limitu {num(limit)} zł.")
-        else:
-            self.budget.setText("")
+        ok, message = BudgetService(self.ctx.db, now=self.ctx.now).check_stake(self.stake.value())
+        self.budget.setText(message or "")
+        set_role(self.budget, "negative" if not ok else "warning")
+
+    def accept(self) -> None:
+        ok, message = BudgetService(self.ctx.db, now=self.ctx.now).check_stake(self.stake.value())
+        if not ok:
+            answer = QMessageBox.warning(
+                self, "Limit budżetu", f"{message}\n\nZapisać kupon mimo to?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+        super().accept()
 
     def save(self) -> int:
         legs = [LegInput(leg.match.match_id, leg.match.league, leg.key[0], leg.key[1], leg.key[2],

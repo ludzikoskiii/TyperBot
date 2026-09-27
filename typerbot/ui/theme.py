@@ -66,6 +66,8 @@ QStatusBar QLabel {{ color: {MUTED}; padding: 0 6px; }}
 QToolTip {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {BORDER}; }}
 QFrame[role="card"] {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QFrame[role="banner"] {{ background: #2b2616; border: 1px solid #5a4a1c; border-radius: 6px; }}
+QFrame[role="alert"] {{ background: #2e1a1b; border: 1px solid #6b2a2c; border-radius: 6px; }}
+QProgressBar {{ background: {SURFACE_2}; border: none; border-radius: 4px; }}
 """
 
 

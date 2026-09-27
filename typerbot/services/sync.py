@@ -518,6 +518,7 @@ class SyncService:
                 self.sync_odds(report)
             if xg:
                 self.backfill_xg(report)
+            self.http.purge(older_than_days=30)   # stare, przeterminowane odpowiedzi z cache
             return self._finish(report)
 
     def run(self, fn: Callable[[SyncReport], None], *, force: bool = False) -> SyncReport:

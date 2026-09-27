@@ -130,3 +130,33 @@ def test_settings_roundtrip(window):
     tab.save_key("oddspapi")
     assert window.ctx.secrets.get("oddspapi") == "nowy-klucz-9999"
     assert tab.quota_table.rowCount() >= 4
+
+
+def test_budget_widget_banner_and_save_confirmation(window, monkeypatch, tmp_path):
+    ctx = window.ctx
+    settings = ctx.settings()
+    settings.budget.monthly_limit = 50.0
+    ctx.save_settings(settings)
+    assert "wydano" in window.budget.text.text() and window.budget_banner.isHidden()
+
+    gen = window.generator
+    gen.days.setValue(7)
+    gen.generate()
+    card = gen.cards()[0]
+    dlg = SaveCouponDialog(ctx, card.coupon)
+    dlg.stake.setValue(60)                                  # ponad limit 50 zł
+    assert "przekroczy" in dlg.budget.text()
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a, **k: QtWidgets.QMessageBox.No))
+    dlg.accept()
+    assert dlg.result() != QtWidgets.QDialog.Accepted       # użytkownik zrezygnował
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a, **k: QtWidgets.QMessageBox.Yes))
+    dlg.accept()
+    assert dlg.result() == QtWidgets.QDialog.Accepted
+    dlg.save()
+    ctx.hub.coupons_changed.emit()
+    assert window.budget.status.level == "exceeded"
+    assert not window.budget_banner.isHidden() and "Przekroczono" in window.budget_banner_text.text()
+    assert "Przekroczono" in window.budget.toolTip() and "801 889 880" in window.budget.toolTip()
+
+    rows = window.coupons.export(str(tmp_path / "k.csv"))
+    assert rows == len(card.coupon.legs)
