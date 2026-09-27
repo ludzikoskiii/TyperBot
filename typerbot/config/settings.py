@@ -15,7 +15,7 @@ from typerbot.data.db import Database
 
 MARKETS = ("1X2", "DC", "OU", "BTTS")
 
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 
 # Wersja 2: wartości domyślne po kalibracji modelu (README, „Kalibracja modelu”). Zapisane ustawienia
 # z wersji 1 przenosimy tylko wtedy, gdy użytkownik zostawił starą wartość domyślną – własnych nie ruszamy.
@@ -31,6 +31,10 @@ _V2_CHANGES: dict[tuple[str, str], tuple[Any, Any]] = {
 # Wersja 3: tylko źródła bez klucza – mniej sezonów historii na start (38 lig zamiast 7).
 _V3_CHANGES: dict[tuple[str, str], tuple[Any, Any]] = {
     ("sync", "csv_seasons"): (10, 8),
+}
+# Wersja 4: więcej kuponów naraz (wcześniej stałe 3, bez ustawienia w interfejsie).
+_V4_CHANGES: dict[tuple[str, str], tuple[Any, Any]] = {
+    ("coupon", "alternatives"): (3, 5),
 }
 ESTIMATED_MODES = ("fallback", "always", "never")
 
@@ -86,8 +90,8 @@ class CouponSettings:
     leagues: list[str] = field(default_factory=list)   # puste = wszystkie włączone ligi
     markets: list[str] = field(default_factory=lambda: list(MARKETS))
     include_low_data: bool = False
-    min_difference: float = 0.5      # alternatywne kupony różnią się min. połową zdarzeń
-    alternatives: int = 3
+    min_difference: float = 0.5      # kupony różnią się min. połową meczów (0 = co najmniej jednym meczem)
+    alternatives: int = 5            # ile kuponów układać naraz (do 20)
 
 
 @dataclass
@@ -131,7 +135,7 @@ def migrate(data: dict[str, Any]) -> bool:
         version = 1
     if version >= SETTINGS_VERSION:
         return False
-    for since, changes in ((2, _V2_CHANGES), (3, _V3_CHANGES)):
+    for since, changes in ((2, _V2_CHANGES), (3, _V3_CHANGES), (4, _V4_CHANGES)):
         if version >= since:
             continue
         for (section, name), (old, new) in changes.items():

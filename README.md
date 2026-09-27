@@ -78,8 +78,8 @@ Trzy zakładki: **Kupony**, **Historia**, **Ustawienia**.
 
 1. **Kurs docelowy** (duże pole, np. 5,00).
 2. Zakres: **Dziś** / **Jutro** / **Najbliższe 3 dni** / **Własny** (od–do).
-3. Duży przycisk **Generuj kupony** – obok pojawiają się do 3 kuponów, posortowane od najwyższej
-   szansy trafienia.
+3. Duży przycisk **Generuj kupony** – obok pojawia się do 5 kuponów (liczba w „Zaawansowanych”, do 20),
+   posortowanych od najwyższej szansy trafienia.
 
 Każdy kupon wygląda jak kupon u bukmachera: mecz (liga, godzina), typ, kurs (≈ i kolor ostrzegawczy =
 kurs szacunkowy), pasek prawdopodobieństwa i **jedno zdanie uzasadnienia** (np. „Arsenal wygrał 7 z 9 ostatnich
@@ -88,7 +88,8 @@ meczów u siebie; model 64% i rynek 61%.”). Pod typami: **kurs łączny**, **k
 kupon zostaje oznaczony w Historii jako skopiowany). Menu **⋯** przy typie: wymień zdarzenie, wpisz
 kurs z oferty, usuń zdarzenie, szczegóły meczu.
 
-Wszystko inne jest w zwiniętej sekcji **Zaawansowane** (rozsądne wartości domyślne): tolerancja
+Wszystko inne jest w zwiniętej sekcji **Zaawansowane** (rozsądne wartości domyślne): **liczba kuponów**
+(5), **o ile kupony się różnią** (połowa meczów albo min. 1 mecz), tolerancja
 kursu, liczba zdarzeń (2–4), min. prawdopodobieństwo typu (40%), tryb (najwyższa szansa / tylko
 value), maks. różnica model–rynek (8 pkt), **kursy szacunkowe** (domyślnie „gdy brak prawdziwych”),
 **kraje i ligi** (wyszukiwarka i zaznaczanie całych krajów), rynki, drużyny „mało danych”
@@ -249,8 +250,10 @@ Generator:
 - szuka kombinacji o kursie w zakresie dokładnie (programowanie dynamiczne), maksymalizując
   `Σ log(p · kurs) − 0,02 · liczba zdarzeń` – przy tym samym kursie łącznym wygrywa **wyższa szansa
   trafienia**, a przy remisie **mniej zdarzeń** (każde zdarzenie to kolejna marża bukmachera);
-- układa **3 alternatywne kupony** (każdy ma co najmniej połowę innych meczów niż poprzednie),
-  posortowane od najwyższej szansy trafienia;
+- układa **5 kuponów** (ustawienie „Liczba kuponów”, do 20) – każdy kolejny ma co najmniej połowę innych
+  meczów niż poprzednie (albo, przy ustawieniu „min. 1 mecz”, choć jeden inny mecz; ten sam zestaw meczów nigdy
+  się nie powtarza); najpierw kupony z prawdziwymi kursami (od najwyższej szansy), a gdy jest ich za mało –
+  dopełnienie kuponami z kursami szacunkowymi (wyraźnie oznaczone);
 - gdy kuponu nie da się ułożyć, pokazuje konkretny powód i podpowiedź, np. „W wybranych ligach nie ma
   meczów na 27.09–30.09. W tym terminie grają: League One (Anglia): 12, … Wybrane ligi mają przerwę
   w rozgrywkach: ostatni mecz nd 20.09, następny pt 09.10” albo „Żaden mecz nie ma jeszcze kursów
@@ -381,6 +384,7 @@ listę problemów ze źródeł z ostatniej synchronizacji.
 |---|---|
 | Pomarańczowa kropka, „Brak połączenia” | aplikacja działa na danych z bazy (data przy „dane z:”); sprawdź internet i odśwież później |
 | „Brak meczów” / „W wybranych ligach nie ma meczów” | często przerwa reprezentacyjna – diagnostyka podaje ligi grające w tym terminie i najbliższy termin wybranych lig; zaznacz więcej krajów w „Zaawansowanych” |
+| Mało kuponów („Ułożono 1 z 5”) | w zakresie dat jest mało meczów: przerwa reprezentacyjna, a kursy na mecze od wtorku do czwartku football-data.co.uk publikuje we wtorek po południu (wcześniej aplikacja zna tylko mecze z openfootball i OpenLigaDB). Komunikat mówi, ile meczów zostało i od którego dnia będzie ich więcej; odśwież dane we wtorek wieczorem, poszerz zakres dat albo wybierz „Kupony różnią się o: min. 1 mecz” |
 | Kupon z kursami „≈” | mecze bez kursów bukmacherów (np. środa przed publikacją pliku we wtorek) – sprawdź kursy u bukmachera albo poczekaj na plik z kursami |
 | Generator nie ułożył kuponu | pod komunikatem jest konkretny powód i podpowiedź; przycisk **Diagnostyka** pokazuje, ile meczów i kursów przyszło z każdego źródła i ile zostaje po każdym filtrze |
 | „⚠ problemy ze źródeł: N” na pasku stanu | kliknij napis – lista problemów z ostatniej synchronizacji (źródło, ligi, stan, co zrobić) |

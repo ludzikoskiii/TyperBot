@@ -218,7 +218,9 @@ def _demo_coupons(db: Database, now: datetime) -> None:
     print_selections(service, cfg, only_value=True)
     coupons = service.generate(cfg)
     _out(f"\nGenerator: {len(coupons)} kupony o kursie {cfg.target_odds:.2f} ±{cfg.tolerance:.0%} (mecze z 7 dni)")
-    for letter, coupon in zip("ABC", coupons):
+    from typerbot.services.coupons import LETTERS
+
+    for letter, coupon in zip(LETTERS, coupons):
         print_coupon(coupon, letter)
 
 

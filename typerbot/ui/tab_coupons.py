@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
 from typerbot.betting.evaluation import ESTIMATED_NOTE
 from typerbot.config.settings import MARKETS, CouponSettings
 from typerbot.fmt import num, pct, plural, signed_pct
-from typerbot.services.coupons import Coupon, CouponLeg, CouponService, GenerationResult, SwapOption, kickoff_local
+from typerbot.services.coupons import (
+    LETTERS, Coupon, CouponLeg, CouponService, GenerationResult, SwapOption, kickoff_local,
+)
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
 from typerbot.ui.diagnostics_view import DiagnosisDialog, reason_html
@@ -27,7 +29,6 @@ from typerbot.ui.widgets import NumItem, ProbabilityDelegate, hbox, label, make_
 from typerbot.ui.workers import run_in_background
 
 MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "OU": "Powyżej/poniżej 2,5", "BTTS": "Obie strzelą"}
-LETTERS = "ABC"
 WEEKDAYS = ["pon", "wt", "śr", "czw", "pt", "sob", "nd"]
 
 
@@ -426,6 +427,14 @@ class CouponsTab(QWidget):
         self.expander.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.expander.setArrowType(Qt.RightArrow)
         self.advanced = QWidget()
+        self.count = QSpinBox()
+        self.count.setRange(1, 20)
+        self.count.setToolTip("Ile kuponów ułożyć naraz – od najwyższej szansy trafienia")
+        self.difference = QComboBox()
+        self.difference.addItem("połowa meczów", 0.5)
+        self.difference.addItem("min. 1 mecz", 0.0)
+        self.difference.setToolTip("Czym muszą się różnić kolejne kupony: co najmniej połową meczów (mniej wspólnego "
+                                   "ryzyka) albo choć jednym meczem (więcej kuponów, gdy meczów jest mało)")
         self.tolerance = QSpinBox()
         self.tolerance.setRange(1, 50)
         self.tolerance.setSuffix(" %")
@@ -464,11 +473,13 @@ class CouponsTab(QWidget):
         el.addWidget(self.min_events)
         el.addWidget(label("–"))
         el.addWidget(self.max_events)
-        for w in (self.mode, self.estimated):
+        for w in (self.mode, self.estimated, self.difference):
             w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             w.setMinimumContentsLength(12)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        form.addRow("Liczba kuponów", self.count)
+        form.addRow("Kupony różnią się o", self.difference)
         form.addRow("Tolerancja kursu ±", self.tolerance)
         form.addRow("„Najbliższe dni”", self.days)
         form.addRow("Liczba zdarzeń", events)
@@ -525,14 +536,26 @@ class CouponsTab(QWidget):
             self.view_group.addButton(b, i)
         self.view_coupons.setChecked(True)
         self.results = CardGrid()
-        self.placeholder = label("Ustaw kurs docelowy, wybierz mecze i kliknij „Generuj kupony”. Aplikacja ułoży do 3 "
+        self.placeholder = label("Ustaw kurs docelowy, wybierz mecze i kliknij „Generuj kupony”. Aplikacja ułoży kilka "
                                  "kuponów – od najwyższej szansy trafienia, każdy z inną połową meczów.", "muted",
                                  wrap=True)
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.results.set_items([self.placeholder], fill=True)
         results_scroll = QScrollArea()
         results_scroll.setWidgetResizable(True)
-        results_scroll.setWidget(self.results)
+        self.notes = QFrame()                  # wyjaśnienia nad kuponami (np. dlaczego jest ich mniej)
+        self.notes.setProperty("role", "banner")
+        self.notes_text = label("", "warning", wrap=True)
+        nl = QVBoxLayout(self.notes)
+        nl.setContentsMargins(10, 6, 10, 6)
+        nl.addWidget(self.notes_text)
+        self.notes.hide()
+        results_box = QWidget()
+        rb = QVBoxLayout(results_box)
+        rb.setContentsMargins(0, 0, 0, 0)
+        rb.addWidget(self.notes)
+        rb.addWidget(self.results, 1)
+        results_scroll.setWidget(results_box)
         self.matches = MatchesTab(ctx)
         self.stack = QStackedWidget()
         self.stack.addWidget(results_scroll)
@@ -600,6 +623,8 @@ class CouponsTab(QWidget):
         self.divergence.setValue(round(c.max_divergence * 100))
         self.low_data.setChecked(c.include_low_data)
         self.estimated.setCurrentIndex(max(0, self.estimated.findData(c.estimated_odds)))
+        self.count.setValue(c.alternatives)
+        self.difference.setCurrentIndex(0 if c.min_difference >= 0.5 else 1)
         self.load_leagues(c.leagues)
         for m, cb in self.markets.items():
             cb.setChecked(m in c.markets)
@@ -627,6 +652,9 @@ class CouponsTab(QWidget):
             max_divergence=self.divergence.value() / 100,
             leagues=[] if all_leagues else leagues, markets=[m for m, cb in self.markets.items() if cb.isChecked()],
             include_low_data=self.low_data.isChecked(), estimated_odds=self.estimated.currentData(),
+            alternatives=self.count.value(),
+            min_difference=base.min_difference if (base.min_difference >= 0.5) == (self.difference.currentData() >= 0.5)
+            else self.difference.currentData(),
         )
 
     def save_defaults(self) -> None:
@@ -666,6 +694,7 @@ class CouponsTab(QWidget):
         self.status.setText(f"Błąd: {message}")
 
     def _clear_results(self) -> None:
+        self.notes.hide()
         old = self.results.items
         self.results.set_items([])
         for w in old:
@@ -696,9 +725,16 @@ class CouponsTab(QWidget):
         n_matches = diag.stages[2].matches if len(diag.stages) > 2 else 0
         msg = (f"Ułożono {plural(len(result.coupons), 'kupon', 'kupony', 'kuponów')} z "
                f"{plural(n_matches, 'meczu', 'meczów', 'meczów')} – zapisane w Historii.")
-        if diag.notes:
-            msg += " " + " ".join(diag.notes)
+        if result.estimated_fallback:
+            msg += " Część kuponów ma kursy szacunkowe (≈) – sprawdź je u bukmachera." if any(
+                not c.estimated_legs for c in result.coupons) else " Kupony z kursami szacunkowymi (≈) – sprawdź " \
+                                                                   "kursy u bukmachera."
+        if len(result.coupons) < cfg.alternatives:
+            msg += " Dlaczego mniej kuponów – nad kuponami."
         self.status.setText(msg)
+        if diag.notes:
+            self.notes_text.setText("\n".join(f"• {n}" for n in diag.notes))
+            self.notes.show()
         self.ctx.hub.coupons_changed.emit()
 
     def cards(self) -> list[SlipCard]:

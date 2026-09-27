@@ -165,14 +165,22 @@ def probability(coupon: list[Candidate]) -> float:
     return math.prod(c.probability for c in coupon)
 
 
+def overlap_limit(coupon: list[Candidate], min_difference: float) -> int:
+    """Ile meczów kolejny kupon może mieć wspólnych z danym: (1 − różnica)·liczba zdarzeń, ale zawsze
+    co najmniej jeden mecz inny – ten sam zestaw meczów nie wraca jako „alternatywa”."""
+    n = len(coupon)
+    return max(0, min(int(math.floor((1 - min_difference) * n)), n - 1))
+
+
 def alternatives(candidates: list[Candidate], cfg: CouponSettings, count: int | None = None,
-                 exclude_matches: frozenset[int] | set[int] = frozenset()) -> list[list[Candidate]]:
-    """Do `count` kuponów, posortowanych od najwyższej szansy trafienia; każdy kolejny ma
-    z każdym wcześniejszym co najwyżej (1 − min_difference)·liczba zdarzeń wspólnych meczów."""
+                 exclude_matches: frozenset[int] | set[int] = frozenset(),
+                 previous: Sequence[list[Candidate]] = ()) -> list[list[Candidate]]:
+    """Do `count` kuponów, posortowanych od najwyższej szansy trafienia; każdy kolejny ma z każdym
+    wcześniejszym (także z `previous` – kuponami ułożonymi wcześniej) ograniczoną liczbę wspólnych meczów."""
     out: list[list[Candidate]] = []
     for _ in range(count if count is not None else cfg.alternatives):
-        limits = [(frozenset(c.match_id for c in prev), int(math.floor((1 - cfg.min_difference) * len(prev))))
-                  for prev in out]
+        limits = [(frozenset(c.match_id for c in prev), overlap_limit(prev, cfg.min_difference))
+                  for prev in (*previous, *out)]
         coupon = optimize(candidates, cfg, exclude_matches, limits)
         if coupon is None:
             break

@@ -19,12 +19,15 @@ def money(x: float) -> str:
     return f"{x:,.2f} zł".replace(",", " ").replace(".", ",")
 
 
+def form(n: int, one: str, few: str, many: str) -> str:
+    """Forma słowa dla liczby: form(2, 'jest', 'są', 'jest') -> 'są'."""
+    if n == 1:
+        return one
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return few
+    return many
+
+
 def plural(n: int, one: str, few: str, many: str) -> str:
     """plural(1, 'zdarzenie', 'zdarzenia', 'zdarzeń') -> '1 zdarzenie'."""
-    if n == 1:
-        word = one
-    elif n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
-        word = few
-    else:
-        word = many
-    return f"{n} {word}"
+    return f"{n} {form(n, one, few, many)}"

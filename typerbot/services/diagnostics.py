@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -21,7 +21,7 @@ from typerbot.data.errors import STATE_LABELS
 from typerbot.data.quota import StatusBoard
 from typerbot.data.records import SCHEDULED, parse_iso, to_iso
 from typerbot.data.sources import SOURCE_LABELS
-from typerbot.fmt import num, pct, plural
+from typerbot.fmt import form, num, pct, plural
 from typerbot.services.sync import SyncReport, load_last_report
 
 if TYPE_CHECKING:
@@ -231,6 +231,8 @@ def diagnose(service: CouponService, cfg: CouponSettings, coupons: list[Coupon],
     diag = Diagnosis(start, end, sources, stages, coupons=len(coupons), problems=sync_problems(report),
                      days=_day_counts(db, rows, leagues), data_as_of=_data_as_of(states))
     _explain(diag, service, cfg, report, leagues, in_window, in_leagues, other_leagues, final, secrets)
+    if not diag.ok and in_window:          # mało meczów w terminie – kiedy będzie więcej i kiedy pojawią się kursy
+        diag.hints.extend(h for h in _scarcity(service, diag, leagues, len(in_window)) if h not in diag.hints)
     return diag
 
 
@@ -335,8 +337,12 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
 
     if diag.ok:
         if diag.coupons < cfg.alternatives:
-            notes.append(f"Ułożono {diag.coupons} z {cfg.alternatives} kuponów – za mało różnych meczów, żeby "
-                         f"kolejny kupon różnił się od poprzednich co najmniej w {pct(cfg.min_difference)} meczów.")
+            n = len(conflict_groups(final))
+            rule = "co najmniej połowę innych meczów" if cfg.min_difference >= 0.5 else "co najmniej jeden inny mecz"
+            notes.append(f"Ułożono {diag.coupons} z {cfg.alternatives} kuponów: po filtrach "
+                         f"{form(n, 'został', 'zostały', 'zostało')} {plural(n, 'mecz', 'mecze', 'meczów')} z typem, "
+                         f"a każdy kolejny kupon musi mieć {rule} niż poprzednie.")
+            notes.extend(_scarcity(service, diag, leagues, len(in_window)))
         return
 
     db = service.db
@@ -470,6 +476,46 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
         reasons.append(f"Żadna kombinacja typów nie trafia w kurs {target} "
                        f"(możliwe kursy: {num(min_odds)}–{num(max_odds)}, ale bez kombinacji w tym przedziale).")
         hints.append("Zwiększ tolerancję (np. do 15–20%) albo zmień kurs docelowy.")
+
+
+MIDWEEK = (1, 2, 3)          # wtorek–czwartek: kursy football-data.co.uk pojawiają się we wtorek po południu
+
+
+def _busy_day(db, leagues: set[str], after: datetime, at_least: int) -> tuple[str, int] | None:
+    """Pierwszy dzień po `after` z co najmniej `at_least` meczami w wybranych ligach (do 3 tygodni)."""
+    codes = sorted(leagues)
+    if not codes:
+        return None
+    rows = db.query(f"SELECT kickoff FROM matches WHERE status = ? AND league_code IN ({','.join('?' * len(codes))}) "
+                    f"AND kickoff >= ? AND kickoff < ?",
+                    (SCHEDULED, *codes, to_iso(after), to_iso(after + timedelta(days=21))))
+    days: dict[str, int] = defaultdict(int)
+    for r in rows:
+        days[_local_day(r["kickoff"])] += 1
+    return next(((d, n) for d, n in sorted(days.items()) if n >= at_least), None)
+
+
+def _scarcity(service: CouponService, diag: Diagnosis, leagues: set[str], in_window: int) -> list[str]:
+    """Dlaczego w zakresie jest mało meczów i kiedy będzie ich więcej."""
+    out = []
+    if in_window < 15:
+        out.append(f"W tym terminie w bazie {form(in_window, 'jest', 'są', 'jest')} tylko "
+                   f"{plural(in_window, 'mecz', 'mecze', 'meczów')} (wszystkie ligi) – np. przerwa reprezentacyjna "
+                   "albo środek tygodnia.")
+    now = service._now().astimezone(LOCAL)
+    first, last = diag.start.astimezone(LOCAL).date(), diag.end.astimezone(LOCAL).date()
+    tue_thu = [first + timedelta(days=i) for i in range((last - first).days + 1)
+               if (first + timedelta(days=i)).weekday() in MIDWEEK]
+    with_odds = {_date(d.day) for d in diag.days if d.with_odds}
+    before_file = now.weekday() in (4, 5, 6, 0) or (now.weekday() == 1 and now.hour < 18)
+    if tue_thu and before_file and not any(d in with_odds for d in tue_thu):
+        out.append("Kursy na mecze od wtorku do czwartku football-data.co.uk publikuje we wtorek po południu – "
+                   "kliknij „Odśwież dane” we wtorek wieczorem, będzie więcej meczów z kursami.")
+    busy = _busy_day(service.db, leagues, diag.end, max(8, 2 * max(in_window, 1)))
+    if busy:
+        out.append(f"Więcej meczów w wybranych ligach: od {day_label(_date(busy[0]))} "
+                   f"({plural(busy[1], 'mecz', 'mecze', 'meczów')} tego dnia) – wybierz zakres „Własny”.")
+    return out
 
 
 def _day_list(db, league: str, start: datetime, end: datetime) -> list[str]:

@@ -148,7 +148,7 @@ def demo_cfg(**kw):
 def test_generate_three_valid_coupons(coupon_service):
     cfg = demo_cfg()
     coupons = coupon_service.generate(cfg)
-    assert len(coupons) == 3
+    assert cfg.alternatives == 5 and len(coupons) == 5
     for i, c in enumerate(coupons):
         assert c.in_range and cfg.min_events <= len(c.legs) <= cfg.max_events
         assert len(c.match_ids) == len(c.legs)                               # jeden typ z meczu
@@ -241,3 +241,33 @@ def test_impossible_target_returns_no_coupons(coupon_service):
 def test_plural():
     assert [plural(n, "zdarzenie", "zdarzenia", "zdarzeń") for n in (1, 2, 5, 12, 22, 25)] == [
         "1 zdarzenie", "2 zdarzenia", "5 zdarzeń", "12 zdarzeń", "22 zdarzenia", "25 zdarzeń"]
+
+
+def test_min_one_different_match_gives_more_distinct_coupons():
+    cands = random_candidates(5, n_matches=6)
+    half = alternatives(cands, CouponSettings(target_odds=3.0, tolerance=0.2, min_probability=0.3, max_events=3), 10)
+    one = alternatives(cands, CouponSettings(target_odds=3.0, tolerance=0.2, min_probability=0.3, max_events=3,
+                                             min_difference=0.0), 10)
+    assert len(one) >= len(half)
+    sets = [frozenset(c.match_id for c in cp) for cp in one]
+    assert len(set(sets)) == len(sets)                                   # żaden zestaw meczów się nie powtarza
+    for i, a in enumerate(one):
+        for b in one[:i]:
+            assert len({c.match_id for c in a} & {c.match_id for c in b}) <= len(b) - 1
+
+
+def test_missing_coupons_are_topped_up_with_estimated_odds(db, secrets, world, clock):
+    # kursy tylko na najbliższą dobę (reszta tygodnia – terminarz bez kursów, jak przed publikacją pliku)
+    sync, _ = make_service(db, secrets, world, clock, now=SEASON_NOW, fixtures_days=1)
+    sync.run_all()
+    service = CouponService(db, now=lambda: SEASON_NOW)
+    result = service.run(demo_cfg(alternatives=12, leagues=["PL"]))   # PL: kursy tylko na sobotę, reszta – terminarz
+    real = [c for c in result.coupons if not c.estimated_legs]
+    est = [c for c in result.coupons if c.estimated_legs]
+    assert real and est and len(real) < 12 and len(result.coupons) <= 12
+    assert result.coupons == real + est                   # najpierw kupony z prawdziwymi kursami
+    assert result.estimated_fallback and "z kursami szacunkowymi" in result.diagnosis.notes[0]
+    assert f"tylko {len(real)} kupon" in result.diagnosis.notes[0]
+    real_ids = [c.match_ids for c in real]
+    for c in est:                                         # dopełnienie też różni się od wcześniejszych kuponów
+        assert all(len(c.match_ids & r) <= len(r) // 2 for r in real_ids)

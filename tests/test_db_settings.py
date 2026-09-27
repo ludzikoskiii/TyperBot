@@ -1,5 +1,6 @@
 import json
 import threading
+from datetime import datetime, timezone
 
 from typerbot.config.secrets import MemorySecretStore, mask
 from typerbot.config.settings import SETTINGS_VERSION, Settings, SettingsStore
@@ -77,6 +78,43 @@ def test_settings_v2_migrate_to_keyless_sources(db):
     db.execute("INSERT INTO settings(key, value) VALUES('app', ?)", (json.dumps(old),))
     s = SettingsStore(db).load()
     assert s.odds.reference == "average" and s.coupon.estimated_odds == "always" and s.sync.csv_seasons == 8
+
+
+def test_settings_v3_get_more_coupons(db):
+    old = json.loads(Settings().to_json())
+    old["version"] = 3
+    old["coupon"]["alternatives"] = 3
+    db.execute("INSERT INTO settings(key, value) VALUES('app', ?)", (json.dumps(old),))
+    assert SettingsStore(db).load().coupon.alternatives == 5
+
+
+def test_migration_removes_fixtures_only_known_from_removed_sources(db):
+    from typerbot.data.records import FINISHED, SCHEDULED, MatchRecord, OddsQuote
+    from typerbot.data.repository import LeagueRepository, MatchRepository
+    from typerbot.data.schema import MIGRATIONS
+    from typerbot.services.register import CouponRegister, LegInput
+
+    LeagueRepository(db).ensure_defaults()
+    repo = MatchRepository(db)
+    k = datetime(2026, 10, 21, 19, 0, tzinfo=timezone.utc)
+
+    def rec(source, ext, home, away, status=SCHEDULED, **kw):
+        return MatchRecord(source=source, external_id=ext, league_code="CL", season=2026, kickoff=k, home=home,
+                           away=away, status=status, **kw)
+
+    stale = repo.save_records([rec("football_data_org", "1", "Arsenal", "Inter")])[0].match_id
+    done = repo.save_records([rec("football_data_org", "2", "Lech", "Legia", FINISHED, home_goals=1,
+                                  away_goals=0)])[0].match_id
+    both = repo.save_records([rec("football_data_org", "3", "Bayern", "Porto")])[0].match_id
+    repo.save_records([rec("openfootball", "x", "Bayern", "Porto",
+                           odds=[OddsQuote("avg", "1X2", "H", 1.5)])])
+    repo.save_records([rec("oddspapi", "p", "Bayern", "Porto", odds=[OddsQuote("superbet", "1X2", "H", 1.4)])])
+    in_coupon = repo.save_records([rec("football_data_org", "4", "Ajax", "Celtic")])[0].match_id
+    CouponRegister(db).save([LegInput(in_coupon, "CL", "1X2", "H", 0.0, 2.0, 0.5)], probability=0.5)
+    db.conn().executescript(MIGRATIONS[6])
+    ids = {r["id"] for r in db.query("SELECT id FROM matches")}
+    assert stale not in ids and {done, both, in_coupon} <= ids   # historia, mecz z innym źródłem, mecz z kuponu
+    assert {r["source"] for r in db.query("SELECT source FROM odds WHERE match_id = ?", (both,))} == {"openfootball"}
 
 
 def test_secret_store_and_mask():

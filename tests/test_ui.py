@@ -87,14 +87,14 @@ def test_three_tabs_and_simple_screen(window):
 def test_slip_cards_copy_swap_and_history(window, monkeypatch):
     tab = generate(window)
     cards = tab.cards()
-    assert len(cards) == 3
+    assert len(cards) == tab.count.value() == 5
     probs = [c.coupon.probability for c in cards]
     assert probs == sorted(probs, reverse=True)                  # od najwyższej szansy trafienia
     card = cards[0]
     assert card.coupon.in_range and card.coupon.history_id
     assert all(leg.summary.endswith(".") for leg in card.coupon.legs)   # jedno zdanie uzasadnienia
     history = window.history.list
-    assert history.table.rowCount() == 3
+    assert history.table.rowCount() == len(cards)
 
     # kopiowanie – tekst kuponu w schowku, kupon oznaczony w historii jako skopiowany
     card.copy()
@@ -228,3 +228,16 @@ def test_no_money_anywhere_and_export(window, tmp_path):
     generate(window)
     rows = window.history.list.export(str(tmp_path / "k.csv"))
     assert rows > 0 and "zł" not in (tmp_path / "k.csv").read_text(encoding="utf-8-sig")
+
+
+def test_coupon_count_setting_and_letters(window):
+    tab = window.coupons
+    assert tab.count.value() == 5                           # domyślnie 5 kuponów
+    tab.count.setValue(7)
+    tab.difference.setCurrentIndex(1)                       # wystarczy 1 inny mecz
+    cfg = tab.current_cfg()
+    assert cfg.alternatives == 7 and cfg.min_difference == 0.0
+    generate(window, days=14, target=3.0, min_prob=35)
+    cards = tab.cards()
+    assert 5 < len(cards) <= 7
+    assert [c.letter for c in cards] == list("ABCDEFG"[:len(cards)])

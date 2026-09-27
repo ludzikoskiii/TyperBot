@@ -270,4 +270,18 @@ MIGRATIONS.append(
     """
 )
 
+# --- v7: porządki po usuniętych źródłach – terminarz, którego już nikt nie zaktualizuje -------------------
+# Mecze nierozegrane znane tylko z usuniętych źródeł (np. terminarz Ligi Mistrzów z football-data.org) nie dostaną
+# wyniku ani kursów; kursy z usuniętych źródeł dla nierozegranych meczów są nieaktualne. Mecze z kuponów zostają.
+_REMOVED = "('football_data_org', 'the_odds_api', 'oddspapi', 'api_football')"
+MIGRATIONS.append(
+    f"""
+    DELETE FROM odds WHERE source IN {_REMOVED}
+        AND match_id IN (SELECT id FROM matches WHERE status NOT IN ('FINISHED', 'CANCELLED', 'AWARDED'));
+    DELETE FROM matches WHERE status NOT IN ('FINISHED', 'CANCELLED', 'AWARDED')
+        AND id NOT IN (SELECT match_id FROM match_sources WHERE source NOT IN {_REMOVED})
+        AND id NOT IN (SELECT match_id FROM coupon_legs);
+    """
+)
+
 SCHEMA_VERSION = len(MIGRATIONS)

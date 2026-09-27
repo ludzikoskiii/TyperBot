@@ -21,7 +21,7 @@ from typerbot.betting.rationale import build_rationale, one_liner
 from typerbot.config.settings import CouponSettings, Settings, SettingsStore
 from typerbot.data.db import Database
 from typerbot.data.repository import MatchRepository
-from typerbot.fmt import num, pct
+from typerbot.fmt import num, pct, plural
 from typerbot.model.markets import Key
 from typerbot.services.predict import PredictionService
 from typerbot.services.register import CouponRegister, LegInput
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from typerbot.services.diagnostics import Diagnosis
 
 LOCAL = ZoneInfo("Europe/Warsaw")
+LETTERS = "ABCDEFGHIJKLMNOPQRST"          # oznaczenia kuponów (do 20)
 START_BUFFER = timedelta(minutes=5)   # mecze zaczynające się za chwilę pomijamy
 
 
@@ -242,33 +243,39 @@ class CouponService:
         cfg = cfg or settings.coupon
         if evaluate or not self._evaluated:
             self.evaluate(cfg)
-        chosen, used = self._alternatives(cfg)
+        chosen, used, extra = self._alternatives(cfg)
         coupons = [self._build(c, used) for c in chosen]
-        fallback = used.estimated_odds == "always" and cfg.estimated_odds == "fallback"
         diag = diagnose(self, used, coupons, secrets=secrets)
-        if fallback:
-            strict = diagnose(self, replace(cfg, estimated_odds="never"), [], secrets=secrets)
-            why = strict.reasons[0] if strict.reasons else "z prawdziwymi kursami nie da się ułożyć kuponu"
-            diag.notes.insert(0, f"Kupony z kursami szacunkowymi – {why[:1].lower() + why[1:]} "
-                                 "Sprawdź kursy u bukmachera przed zagraniem.")
-        return GenerationResult(coupons, diag, fallback)
+        if extra:
+            real = len(coupons) - extra
+            strict = diagnose(self, replace(cfg, estimated_odds="never"), [], secrets=secrets) if not real else None
+            why = (strict.reasons[0] if strict and strict.reasons else
+                   f"z prawdziwymi kursami dało się ułożyć tylko {plural(real, 'kupon', 'kupony', 'kuponów')}")
+            which = "Kupony" if not real else f"Kupony {LETTERS[real]}–{LETTERS[len(coupons) - 1]}" if extra > 1 \
+                else f"Kupon {LETTERS[real]}"
+            why = why[:1].lower() + why[1:].rstrip(".")
+            diag.notes.insert(0, f"{which} z kursami szacunkowymi – {why}. Sprawdź kursy u bukmachera przed zagraniem.")
+        return GenerationResult(coupons, diag, bool(extra))
 
-    def _alternatives(self, cfg: CouponSettings) -> tuple[list[list[Candidate]], CouponSettings]:
-        """Kupony z prawdziwymi kursami; w trybie 'fallback' – gdy się nie da – z kursami szacunkowymi."""
+    def _alternatives(self, cfg: CouponSettings) -> tuple[list[list[Candidate]], CouponSettings, int]:
+        """Kupony z prawdziwymi kursami; w trybie 'fallback' brakujące do `alternatives` kupony dopełniamy
+        kuponami z kursami szacunkowymi (np. mecze, na które pliki z kursami jeszcze się nie ukazały).
+        Zwraca (kupony, ustawienia, liczba dopełnionych kuponów z kursami szacunkowymi – na końcu listy)."""
         strict = replace(cfg, estimated_odds="never") if cfg.estimated_odds == "fallback" else cfg
         chosen = alternatives(self.candidates(strict), strict, cfg.alternatives)
-        if chosen or cfg.estimated_odds != "fallback":
-            return chosen, strict
+        if cfg.estimated_odds != "fallback" or len(chosen) >= cfg.alternatives:
+            return chosen, strict, 0
         loose = replace(cfg, estimated_odds="always")
-        chosen = alternatives(self.candidates(loose), loose, cfg.alternatives)
-        return (chosen, loose) if chosen else ([], strict)
+        more = alternatives(self.candidates(loose), loose, cfg.alternatives - len(chosen), previous=chosen)
+        more = [c for c in more if any(x.estimated_odds for x in c)]      # tylko te, które coś dokładają
+        return chosen + more, (loose if more else strict), len(more)
 
     def generate(self, cfg: CouponSettings | None = None, *, evaluate: bool = True) -> list[Coupon]:
         settings = self.settings()
         cfg = cfg or settings.coupon
         if evaluate or not self._evaluated:
             self.evaluate(cfg)
-        chosen, used = self._alternatives(cfg)
+        chosen, used, _ = self._alternatives(cfg)
         return [self._build(c, used) for c in chosen]
 
     def _leg(self, match_id: int, key: Key, with_rationale: bool = True) -> CouponLeg:

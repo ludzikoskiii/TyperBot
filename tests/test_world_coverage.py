@@ -98,3 +98,25 @@ def test_international_break_gives_concrete_reason_and_next_date(tmp_path_factor
     anywhere = service.run(CouponSettings(days_ahead=3))                  # wszystkie ligi – mecze są
     assert anywhere.diagnosis.stages[0].matches > 0
     db.close()
+
+
+def test_few_coupons_are_explained_with_next_busy_day(tmp_path_factory):
+    db = _synced(tmp_path_factory, IN_BREAK, "few")
+    service = CouponService(db, now=lambda: IN_BREAK)
+    result = service.run(CouponSettings(days_ahead=3, target_odds=3.0, min_events=1, min_probability=0.28,
+                                        alternatives=5))
+    assert 0 < len(result.coupons) < 5
+    text = " ".join(result.diagnosis.notes)
+    assert "po filtrach zosta" in text and "tylko" in text and "W tym terminie w bazie" in text
+    assert "Więcej meczów w wybranych ligach: od" in text
+    db.close()
+
+
+def test_midweek_odds_hint_before_tuesday_file(tmp_path_factory):
+    # niedziela wieczór: plik z kursami obejmuje weekend, mecze od wtorku jeszcze bez kursów (jak w rzeczywistości)
+    db = _synced(tmp_path_factory, IN_BREAK, "midweek", fixtures_days=2)
+    service = CouponService(db, now=lambda: IN_BREAK)
+    result = service.run(CouponSettings(days_ahead=3, target_odds=3.0, min_events=1, min_probability=0.28))
+    text = " ".join(result.diagnosis.notes + result.diagnosis.hints)
+    assert "we wtorek po południu" in text
+    db.close()

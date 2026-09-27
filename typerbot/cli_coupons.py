@@ -9,9 +9,7 @@ from dataclasses import replace
 from typerbot.config.settings import CouponSettings, MARKETS
 from typerbot.data.db import Database
 from typerbot.fmt import num as _pl, pct as _pct, plural, signed_pct
-from typerbot.services.coupons import Coupon, CouponService, kickoff_local
-
-LETTERS = "ABCDEFGHIJ"
+from typerbot.services.coupons import LETTERS, Coupon, CouponService, kickoff_local
 
 
 def _out(text: str = "") -> None:
@@ -29,7 +27,8 @@ def coupon_settings_from_args(base: CouponSettings, args: argparse.Namespace) ->
     elif getattr(args, "dni", None):
         cfg.date_range, cfg.days_ahead = "days", args.dni
     for attr, field in (("kurs", "target_odds"), ("tolerancja", "tolerance"), ("min", "min_events"),
-                        ("max", "max_events"), ("min_p", "min_probability"), ("tryb", "mode")):
+                        ("max", "max_events"), ("min_p", "min_probability"), ("tryb", "mode"),
+                        ("ile", "alternatives")):
         value = getattr(args, attr, None)
         if value is not None:
             setattr(cfg, field, value)
@@ -169,3 +168,4 @@ def add_coupon_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--ligi", help="np. PL,EKS")
     p.add_argument("--rynki", help="np. 1X2,DC,OU,BTTS")
     p.add_argument("--z-malo-danych", action="store_true", help="dopuść drużyny z małą liczbą meczów")
+    p.add_argument("--ile", type=int, choices=range(1, 21), metavar="1–20", help="ile kuponów ułożyć")
