@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from typerbot.betting.coupon import Candidate
 from typerbot.betting.evaluation import SelectionEval, evaluate_match
-from typerbot.betting.odds import payout
+from typerbot.betting.odds import odds_after_tax
 from typerbot.betting.optimizer import alternatives, eligible
 from typerbot.betting.rationale import build_rationale
 from typerbot.config.settings import CouponSettings, Settings, SettingsStore
@@ -24,6 +24,7 @@ from typerbot.data.repository import MatchRepository
 from typerbot.fmt import num, pct
 from typerbot.model.markets import Key
 from typerbot.services.predict import PredictionService
+from typerbot.services.register import CouponRegister, LegInput
 
 if TYPE_CHECKING:
     from typerbot.services.diagnostics import Diagnosis
@@ -65,9 +66,9 @@ class CouponLeg:
 @dataclass
 class Coupon:
     legs: list[CouponLeg]
-    stake: float
     settings: Settings
     target: tuple[float, float]    # dopuszczalny zakres kursu
+    history_id: int | None = None  # numer kuponu w historii
 
     @property
     def odds(self) -> float:
@@ -75,12 +76,8 @@ class Coupon:
 
     @property
     def odds_after_tax(self) -> float:
-        """Kurs „na rękę”: wypłata / stawka po podatku od stawki (i od wygranej, jeśli dotyczy)."""
-        return payout(self.stake, self.odds, self.settings.tax) / self.stake if self.stake else 0.0
-
-    @property
-    def payout(self) -> float:
-        return payout(self.stake, self.odds, self.settings.tax)
+        """Kurs po podatku od stawki: ile wraca z 1 jednostki (kurs × 0,88)."""
+        return odds_after_tax(self.odds, self.settings.tax)
 
     @property
     def probability(self) -> float:
@@ -97,7 +94,7 @@ class Coupon:
 
     @property
     def ev(self) -> float:
-        """EV kuponu po podatku na 1 zł stawki."""
+        """EV kuponu po podatku na 1 jednostkę stawki."""
         return self.probability * self.odds_after_tax - 1.0
 
     @property
@@ -247,7 +244,41 @@ class CouponService:
 
     def _build(self, chosen: list[Candidate], cfg: CouponSettings) -> Coupon:
         legs = sorted((self._leg(c.match_id, c.key) for c in chosen), key=lambda leg: leg.match.kickoff)
-        return Coupon(legs, cfg.stake, self.settings(), _range(cfg))
+        return Coupon(legs, self.settings(), _range(cfg))
+
+    # -- historia ------------------------------------------------------------------------------
+    @staticmethod
+    def leg_inputs(coupon: Coupon) -> list[LegInput]:
+        return [LegInput(leg.match.match_id, leg.match.league, leg.key[0], leg.key[1], leg.key[2],
+                         leg.selection.odds or 1.0, leg.selection.probability, leg.selection.p_model,
+                         leg.selection.p_market, leg.selection.odds_source == "estimated") for leg in coupon.legs]
+
+    def record(self, coupons: list[Coupon], target_odds: float | None = None) -> list[int]:
+        """Zapisuje wygenerowane kupony w historii (ten sam zestaw typów tylko raz)."""
+        register = CouponRegister(self.db, now=self._now)
+        ids = []
+        for c in coupons:
+            c.history_id = register.save(self.leg_inputs(c), probability=c.probability,
+                                         probability_model=c.probability_model,
+                                         probability_market=c.probability_market, target_odds=target_odds)
+            ids.append(c.history_id)
+        return ids
+
+    def update_record(self, coupon: Coupon) -> int | None:
+        """Po ręcznej zmianie kuponu – aktualizuje jego wpis w historii."""
+        if not coupon.legs:
+            return coupon.history_id
+        register = CouponRegister(self.db, now=self._now)
+        if coupon.history_id is None:
+            coupon.history_id = register.save(self.leg_inputs(coupon), probability=coupon.probability,
+                                              probability_model=coupon.probability_model,
+                                              probability_market=coupon.probability_market)
+        else:
+            coupon.history_id = register.replace_legs(coupon.history_id, self.leg_inputs(coupon),
+                                                      probability=coupon.probability,
+                                                      probability_model=coupon.probability_model,
+                                                      probability_market=coupon.probability_market)
+        return coupon.history_id
 
     # -- ręczna zmiana -------------------------------------------------------------------------
     def swap_options(self, coupon: Coupon, match_id: int, cfg: CouponSettings | None = None,

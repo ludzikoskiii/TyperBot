@@ -1,11 +1,11 @@
-"""Zakładka „Statystyki” – moje wyniki oraz backtest i strojenie modelu."""
+"""Backtest i strojenie modelu (wyniki w jednostkach: 1 zakład / kupon = 1 jednostka)."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLineEdit, QListWidget, QListWidgetItem,
+    QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
 from typerbot.config.settings import CouponSettings
@@ -14,103 +14,14 @@ from typerbot.model.backtest import BacktestConfig, BacktestResult, default_seas
 from typerbot.model.tuning import tune
 from typerbot.ui import charts, theme
 from typerbot.ui.context import AppContext
-from typerbot.ui.widgets import KpiTile, NumItem, hbox, label, make_table, profit_color, profit_role, text_item
+from typerbot.ui.widgets import NumItem, hbox, label, make_table, profit_color, text_item
 from typerbot.ui.workers import run_in_background
 
 MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "OU": "Powyżej/poniżej 2,5", "BTTS": "Obie strzelą"}
 
 
-def _money(x: float) -> str:
-    return f"{x:+,.2f} zł".replace(",", " ").replace(".", ",")
-
-
-class MyResultsView(QWidget):
-    def __init__(self, ctx: AppContext):
-        super().__init__()
-        self.ctx = ctx
-        self.tiles = {k: KpiTile(k) for k in ("Postawiono", "Wypłacono", "Bilans", "ROI", "Trafność kuponów",
-                                              "W grze")}
-        grid = QGridLayout()
-        for i, tile in enumerate(self.tiles.values()):
-            grid.addWidget(tile, 0, i)
-        self.charts_row = QSplitter(Qt.Horizontal)
-        self.market_table = make_table(["Rynek", "Typów", "Trafione", "Przegrane", "Trafność", "Śr. prognoza",
-                                        "Śr. kurs", "Kupony 1 rynku", "ROI tych kuponów"], stretch=0)
-        self.league_table = make_table(["Liga", "Typów", "Trafione", "Przegrane", "Trafność", "Śr. prognoza",
-                                        "Śr. kurs", "Kupony 1 ligi", "ROI tych kuponów"], stretch=0)
-        self.month_table = make_table(["Miesiąc", "Kupony", "Postawiono (wszystkie)", "Rozliczone stawki",
-                                       "Wypłacono", "Bilans", "ROI"], stretch=0)
-        tables = QTabWidget()
-        tables.addTab(self.market_table, "Według rynków")
-        tables.addTab(self.league_table, "Według lig")
-        tables.addTab(self.month_table, "Według miesięcy")
-        split = QSplitter(Qt.Vertical)
-        split.addWidget(self.charts_row)
-        split.addWidget(tables)
-        split.setSizes([280, 260])
-        lay = QVBoxLayout(self)
-        lay.addLayout(grid)
-        lay.addWidget(split, 1)
-        lay.addWidget(label("Trafność typów dla rynków i lig liczymy na pojedynczych zdarzeniach (porównaj ze średnią "
-                            "prognozą – to test kalibracji). Zysk kuponu z kilku rynków/lig nie da się uczciwie "
-                            "rozdzielić, dlatego ROI pokazujemy tylko dla kuponów w całości z jednego rynku/ligi.",
-                            "muted", wrap=True))
-        ctx.hub.coupons_changed.connect(self.reload)
-        ctx.hub.data_changed.connect(self.reload)
-        self.reload()
-
-    def reload(self) -> None:
-        stats = self.ctx.stats
-        coupons = stats.coupons()
-        t = stats.totals(coupons)
-        self.tiles["Postawiono"].set(f"{num(t.staked + t.pending_stake)} zł", f"rozliczone {num(t.staked)} zł")
-        self.tiles["Wypłacono"].set(f"{num(t.returned)} zł", f"{t.settled} rozliczonych kuponów")
-        self.tiles["Bilans"].set(_money(t.profit), "rozliczone kupony", profit_role(t.profit))
-        self.tiles["ROI"].set(signed_pct(t.roi) if t.staked else "–", "zysk / postawione", profit_role(t.roi))
-        self.tiles["Trafność kuponów"].set(pct(t.hit_rate, 1) if t.won + t.lost else "–",
-                                           f"{t.won} wygranych · {t.lost} przegranych · {t.void} zwrotów")
-        self.tiles["W grze"].set(str(t.pending), f"{num(t.pending_stake)} zł")
-
-        while self.charts_row.count():
-            self.charts_row.widget(0).setParent(None)
-        months = list(reversed(stats.by_month(coupons)))
-        self.charts_row.addWidget(charts.equity_chart(stats.equity(coupons)))
-        self.charts_row.addWidget(charts.profit_bars([m.month for m in months], [round(m.profit, 2) for m in months]))
-
-        for table, rows in ((self.market_table, stats.by_market(coupons)), (self.league_table, stats.by_league(coupons))):
-            table.setSortingEnabled(False)
-            table.setRowCount(0)
-            for g in rows:
-                r = table.rowCount()
-                table.insertRow(r)
-                table.setItem(r, 0, text_item(g.name, bold=True))
-                table.setItem(r, 1, NumItem(str(g.legs), g.legs))
-                table.setItem(r, 2, NumItem(str(g.won), g.won))
-                table.setItem(r, 3, NumItem(str(g.lost), g.lost))
-                table.setItem(r, 4, NumItem(pct(g.hit_rate, 1) if g.won + g.lost else "–", g.hit_rate))
-                table.setItem(r, 5, NumItem(pct(g.avg_probability, 1), g.avg_probability))
-                table.setItem(r, 6, NumItem(num(g.avg_odds), g.avg_odds))
-                table.setItem(r, 7, NumItem(str(g.coupons), g.coupons))
-                roi = g.coupons_roi
-                table.setItem(r, 8, NumItem(signed_pct(roi) if roi is not None else "–", roi))
-                if roi is not None and profit_color(roi):
-                    table.item(r, 8).setForeground(_brush(profit_color(roi)))
-            table.setSortingEnabled(True)
-        mt = self.month_table
-        mt.setRowCount(0)
-        for m in stats.by_month(coupons):
-            r = mt.rowCount()
-            mt.insertRow(r)
-            mt.setItem(r, 0, text_item(m.month, bold=True))
-            mt.setItem(r, 1, NumItem(str(m.coupons), m.coupons))
-            mt.setItem(r, 2, NumItem(f"{num(m.staked_all)} zł", m.staked_all))
-            mt.setItem(r, 3, NumItem(f"{num(m.staked)} zł", m.staked))
-            mt.setItem(r, 4, NumItem(f"{num(m.returned)} zł", m.returned))
-            mt.setItem(r, 5, NumItem(_money(m.profit), m.profit))
-            mt.setItem(r, 6, NumItem(signed_pct(m.roi) if m.staked else "–", m.roi))
-            color = profit_color(m.profit)
-            if color:
-                mt.item(r, 5).setForeground(_brush(color))
+def _units(x: float) -> str:
+    return f"{x:+,.2f}".replace(",", " ").replace(".", ",") + " j."
 
 
 def _brush(color: str):
@@ -300,10 +211,10 @@ class BacktestView(QWidget):
         mk = [r.market_probability for r in recs if r.market_probability is not None]
         lines = [
             f"<b>Pojedyncze typy value</b>: {s.bets} zakładów, trafność {pct(s.hit_rate, 1)}, śr. kurs {num(s.avg_odds)}, "
-            f"wynik <span style='color:{profit_color(s.profit) or theme.TEXT}'>{_money(s.profit)}</span>, ROI {signed_pct(s.roi)}",
+            f"wynik <span style='color:{profit_color(s.profit) or theme.TEXT}'>{_units(s.profit)}</span>, ROI {signed_pct(s.roi)}",
             "według przewagi: " + " · ".join(f"{k}: {v.bets} zakł., ROI {signed_pct(v.roi)}" for k, v in res.singles_by_edge.items()),
             f"<b>Kupony</b> (kurs {num(self.target.value())}): {c.bets}, trafione {c.hits} ({pct(c.hit_rate, 1)}), "
-            f"wynik <span style='color:{profit_color(c.profit) or theme.TEXT}'>{_money(c.profit)}</span>, ROI {signed_pct(c.roi)}"
+            f"wynik <span style='color:{profit_color(c.profit) or theme.TEXT}'>{_units(c.profit)}</span>, ROI {signed_pct(c.roi)}"
             + (f" · szansa trafienia: prognoza {pct(avg_p, 1)}" + (f", rynek {pct(sum(mk) / len(mk), 1)}" if mk else "")
                + f", faktycznie {pct(c.hit_rate, 1)}" if recs else ""),
         ]
@@ -332,7 +243,7 @@ class BacktestView(QWidget):
             self.chart_row.addWidget(charts.xy_line_chart(res.blend, "Log-loss 1X2 a udział modelu", "udział modelu %",
                                                           "log-loss", highlight=best))
         if res.equity_coupons:
-            self.chart_row.addWidget(charts.equity_chart(res.equity_coupons, "Symulowane kupony – bilans (zł)"))
+            self.chart_row.addWidget(charts.equity_chart(res.equity_coupons, "Symulowane kupony – wynik (jednostki)"))
 
     def run_tuning(self) -> None:
         cfg = self._config()
@@ -380,11 +291,7 @@ class BacktestView(QWidget):
 class StatsTab(QWidget):
     def __init__(self, ctx: AppContext):
         super().__init__()
-        self.results = MyResultsView(ctx)
         self.backtest = BacktestView(ctx)
-        tabs = QTabWidget()
-        tabs.addTab(self.results, "Moje wyniki")
-        tabs.addTab(self.backtest, "Backtest modelu")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(tabs)
+        lay.addWidget(self.backtest)

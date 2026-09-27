@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timezone
 
-from PySide6.QtCore import QDate, QDateTime, Qt, Signal
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDateEdit, QDateTimeEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QGridLayout, QGroupBox, QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QGridLayout, QGroupBox, QInputDialog, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
     QScrollArea, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from typerbot.config.settings import MARKETS, CouponSettings
 from typerbot.fmt import num, pct, plural, signed_pct
 from typerbot.services.coupons import Coupon, CouponService, GenerationResult, SwapOption, kickoff_local
-from typerbot.services.budget import BudgetService
-from typerbot.services.register import LegInput
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
 from typerbot.ui.diagnostics_view import DiagnosisDialog, reason_html
@@ -72,100 +69,15 @@ class SwapDialog(QDialog):
         return self.options[rows[0].row()] if rows else None
 
 
-class SaveCouponDialog(QDialog):
-    """Zapis kuponu jako postawionego – stawka i faktyczny kurs z kuponu bukmachera."""
-
-    def __init__(self, ctx: AppContext, coupon: Coupon, parent=None):
-        super().__init__(parent)
-        self.ctx = ctx
-        self.coupon = coupon
-        settings = ctx.settings()
-        self.setWindowTitle("Zapisz postawiony kupon")
-        self.stake = QDoubleSpinBox()
-        self.stake.setRange(0.5, 1_000_000)
-        self.stake.setDecimals(2)
-        self.stake.setSuffix(" zł")
-        self.stake.setValue(coupon.stake)
-        self.bookmaker = QLineEdit(settings.odds.bookmaker.capitalize() or "Superbet")
-        self.odds = QDoubleSpinBox()
-        self.odds.setRange(1.01, 100000)
-        self.odds.setDecimals(2)
-        self.odds.setValue(round(coupon.odds, 2))
-        self.placed = QDateTimeEdit(QDateTime.currentDateTime())
-        self.placed.setCalendarPopup(True)
-        self.placed.setDisplayFormat("dd.MM.yyyy HH:mm")
-        self.tax_paid = QCheckBox("Bukmacher pokrywa podatek")
-        self.tax_paid.setChecked(settings.tax.bookmaker_pays_tax)
-        self.note = QLineEdit()
-        self.preview = label("", "muted", wrap=True)
-        self.budget = label("", "warning", wrap=True)
-        form = QFormLayout()
-        form.addRow("Stawka", self.stake)
-        form.addRow("Bukmacher", self.bookmaker)
-        form.addRow("Kurs łączny z kuponu", self.odds)
-        form.addRow("Postawiono", self.placed)
-        form.addRow("", self.tax_paid)
-        form.addRow("Notatka", self.note)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setText("Zapisz")
-        buttons.button(QDialogButtonBox.Cancel).setText("Anuluj")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay = QVBoxLayout(self)
-        lay.addWidget(label(f"{plural(len(coupon.legs), 'zdarzenie', 'zdarzenia', 'zdarzeń')}, "
-                            f"kurs z aplikacji {num(coupon.odds)}", "muted"))
-        lay.addLayout(form)
-        lay.addWidget(self.preview)
-        lay.addWidget(self.budget)
-        lay.addWidget(buttons)
-        for w in (self.stake, self.odds):
-            w.valueChanged.connect(self._update)
-        self.tax_paid.toggled.connect(self._update)
-        self._update()
-
-    def _update(self) -> None:
-        from typerbot.betting.odds import payout
-
-        tax = replace(self.ctx.settings().tax, bookmaker_pays_tax=self.tax_paid.isChecked())
-        value = payout(self.stake.value(), self.odds.value(), tax)
-        self.preview.setText(f"Możliwa wygrana: {num(value)} zł (po podatku). "
-                             f"Szansa trafienia wg prognozy: {pct(self.coupon.probability, 1)}.")
-        ok, message = BudgetService(self.ctx.db, now=self.ctx.now).check_stake(self.stake.value())
-        self.budget.setText(message or "")
-        set_role(self.budget, "negative" if not ok else "warning")
-
-    def accept(self) -> None:
-        ok, message = BudgetService(self.ctx.db, now=self.ctx.now).check_stake(self.stake.value())
-        if not ok:
-            answer = QMessageBox.warning(
-                self, "Limit budżetu", f"{message}\n\nZapisać kupon mimo to?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                return
-        super().accept()
-
-    def save(self) -> int:
-        legs = [LegInput(leg.match.match_id, leg.match.league, leg.key[0], leg.key[1], leg.key[2],
-                         leg.selection.odds or 1.0, leg.selection.probability, leg.selection.p_model,
-                         leg.selection.p_market) for leg in self.coupon.legs]
-        placed = self.placed.dateTime().toPython().astimezone(timezone.utc)
-        return self.ctx.register.save(
-            legs, self.stake.value(), odds=self.odds.value(), bookmaker=self.bookmaker.text().strip(),
-            placed_at=placed, bookmaker_pays_tax=self.tax_paid.isChecked(), probability=self.coupon.probability,
-            probability_model=self.coupon.probability_model, probability_market=self.coupon.probability_market,
-            ev=self.coupon.ev, note=self.note.text().strip())
-
-
 # -- karta kuponu -----------------------------------------------------------------------------------
 class CouponCard(QWidget):
     changed = Signal()
-    saved = Signal(int)
 
     def __init__(self, ctx: AppContext, service: CouponService, cfg: CouponSettings, coupon: Coupon, letter: str):
         super().__init__()
         self.ctx, self.service, self.cfg, self.coupon, self.letter = ctx, service, cfg, coupon, letter
         self.tiles = {name: KpiTile(name) for name in ("Kurs łączny", "Po podatku", "Szansa trafienia",
-                                                         "EV kuponu (po podatku)", "Wygrana")}
+                                                         "EV kuponu (po podatku)")}
         self.warning = label("", "warning")
         self.table = make_table(LEG_COLUMNS, stretch=2, sortable=False)
         self.table.setItemDelegateForColumn(6, ProbabilityDelegate(self.table))
@@ -178,8 +90,7 @@ class CouponCard(QWidget):
         self.swap_btn = QPushButton("Wymień zdarzenie…")
         self.odds_btn = QPushButton("Zmień kurs…")
         self.remove_btn = QPushButton("Usuń zdarzenie")
-        self.save_btn = QPushButton("Zapisz jako postawiony…")
-        self.save_btn.setProperty("role", "primary")
+        self.history_label = label("", "muted")
         tiles = QGridLayout()
         for i, tile in enumerate(self.tiles.values()):
             tiles.addWidget(tile, 0, i)
@@ -191,11 +102,10 @@ class CouponCard(QWidget):
         lay.addLayout(tiles)
         lay.addWidget(self.warning)
         lay.addWidget(split, 1)
-        lay.addLayout(hbox(self.swap_btn, self.odds_btn, self.remove_btn, None, self.save_btn))
+        lay.addLayout(hbox(self.swap_btn, self.odds_btn, self.remove_btn, None, self.history_label))
         self.swap_btn.clicked.connect(self.swap)
         self.odds_btn.clicked.connect(self.change_odds)
         self.remove_btn.clicked.connect(self.remove)
-        self.save_btn.clicked.connect(self.save)
         self.table.itemSelectionChanged.connect(self._show_rationale)
         self.table.doubleClicked.connect(lambda idx: self.change_odds() if idx.column() == 4 else self.swap())
         self.refresh()
@@ -208,13 +118,12 @@ class CouponCard(QWidget):
         c = self.coupon
         self.tiles["Kurs łączny"].set(num(c.odds), f"zakres {num(c.target[0])}–{num(c.target[1])}",
                                       None if c.in_range else "warning")
-        self.tiles["Po podatku"].set(num(c.odds_after_tax), "wypłata / stawka")
+        self.tiles["Po podatku"].set(num(c.odds_after_tax), "kurs × 0,88 (podatek od stawki)")
         market = c.probability_market
         self.tiles["Szansa trafienia"].set(pct(c.probability, 1), f"model {pct(c.probability_model, 1)}"
                                            + (f" · rynek {pct(market, 1)}" if market is not None else ""))
         self.tiles["EV kuponu (po podatku)"].set(signed_pct(c.ev), f"przed podatkiem {signed_pct(c.ev_before_tax)}",
                                                  profit_role(c.ev))
-        self.tiles["Wygrana"].set(f"{num(c.payout)} zł", f"przy stawce {num(c.stake)} zł")
         self.warning.setText("" if c.in_range else "Kurs łączny poza zadanym zakresem – wymień zdarzenie lub zmień kurs.")
         t = self.table
         selected = self.selected_leg()
@@ -235,6 +144,7 @@ class CouponCard(QWidget):
             t.setItem(r, 9, text_item(signed_pct(s.ev), theme.POSITIVE if s.is_value else None))
             if s.is_value:
                 fill_row_background(t, r, theme.VALUE_BG)
+        self.history_label.setText(f"W historii jako kupon nr {c.history_id}" if c.history_id else "")
         idx = next((i for i, leg in enumerate(c.legs) if selected and leg.match.match_id == selected.match.match_id), 0)
         if c.legs:
             t.selectRow(idx)
@@ -260,8 +170,7 @@ class CouponCard(QWidget):
         dlg = SwapDialog(options, f"{leg.match.home} – {leg.match.away}: {leg.selection.label}", self)
         if dlg.exec() == QDialog.Accepted and dlg.chosen():
             self.coupon = self.service.swap(self.coupon, leg.match.match_id, dlg.chosen())
-            self.refresh()
-            self.changed.emit()
+            self._updated()
 
     def change_odds(self) -> None:
         leg = self.selected_leg()
@@ -271,24 +180,21 @@ class CouponCard(QWidget):
                                            leg.selection.odds or 1.5, 1.01, 1000.0, 2)
         if ok:
             self.coupon = self.service.set_manual_odds(self.coupon, leg.match.match_id, value)
-            self.refresh()
-            self.changed.emit()
+            self._updated()
 
     def remove(self) -> None:
         leg = self.selected_leg()
         if leg is None or len(self.coupon.legs) <= 1:
             return
         self.coupon = self.service.remove(self.coupon, leg.match.match_id)
+        self._updated()
+
+    def _updated(self) -> None:
+        """Po ręcznej zmianie: przeliczenie, aktualizacja wpisu w historii i odświeżenie widoku."""
+        self.service.update_record(self.coupon)
         self.refresh()
         self.changed.emit()
-
-    def save(self) -> None:
-        dlg = SaveCouponDialog(self.ctx, self.coupon, self)
-        if dlg.exec() == QDialog.Accepted:
-            coupon_id = dlg.save()
-            self.ctx.hub.coupons_changed.emit()
-            self.ctx.hub.message.emit(f"Zapisano kupon nr {coupon_id} w „Moje kupony”.")
-            self.saved.emit(coupon_id)
+        self.ctx.hub.coupons_changed.emit()
 
 
 # -- zakładka -----------------------------------------------------------------------------------------
@@ -331,9 +237,6 @@ class GeneratorTab(QWidget):
         self.leagues.setMaximumHeight(150)
         self.markets = {m: QCheckBox(MARKET_NAMES[m]) for m in MARKETS}
         self.low_data = QCheckBox("Dopuść drużyny z małą liczbą danych")
-        self.stake = QDoubleSpinBox()
-        self.stake.setRange(0.5, 1_000_000)
-        self.stake.setSuffix(" zł")
         self.generate_btn = QPushButton("Generuj kupony")
         self.generate_btn.setProperty("role", "primary")
         self.save_defaults_btn = QPushButton("Zapisz jako domyślne")
@@ -354,7 +257,6 @@ class GeneratorTab(QWidget):
         form.addRow("Maks. zdarzeń", self.max_events)
         form.addRow("Min. prawdop. typu", self.min_prob)
         form.addRow("Tryb", self.mode)
-        form.addRow("Stawka", self.stake)
         box = QGroupBox("Ustawienia kuponu")
         blay = QVBoxLayout(box)
         blay.addLayout(form)
@@ -418,7 +320,6 @@ class GeneratorTab(QWidget):
         self.max_events.setValue(c.max_events)
         self.min_prob.setValue(round(c.min_probability * 100))
         self.mode.setCurrentIndex(0 if c.mode == "probability" else 1)
-        self.stake.setValue(c.stake)
         self.low_data.setChecked(c.include_low_data)
         self.leagues.clear()
         for lg in self.ctx.sync.leagues.all(enabled_only=True):
@@ -452,7 +353,7 @@ class GeneratorTab(QWidget):
             max_events=max(self.min_events.value(), self.max_events.value()),
             min_probability=self.min_prob.value() / 100, mode=self.mode.currentData(),
             leagues=[] if all_leagues else leagues, markets=[m for m, cb in self.markets.items() if cb.isChecked()],
-            include_low_data=self.low_data.isChecked(), stake=self.stake.value(),
+            include_low_data=self.low_data.isChecked(),
         )
 
     def save_defaults(self) -> None:
@@ -477,7 +378,9 @@ class GeneratorTab(QWidget):
         secrets = self.ctx.secrets
 
         def work():
-            return service.run(cfg, secrets=secrets)
+            result = service.run(cfg, secrets=secrets)
+            service.record(result.coupons, cfg.target_odds)       # kupony trafiają do historii
+            return result
 
         run_in_background(work, lambda res: self._generated(cfg, res), self._failed)
 
@@ -504,12 +407,14 @@ class GeneratorTab(QWidget):
             self.tabs.addTab(self.placeholder, "Kupony")
             self.status.setText(diag.headline())
             return
+        self.ctx.hub.coupons_changed.emit()
         for letter, coupon in zip("ABC", coupons):
             card = CouponCard(self.ctx, self.service, cfg, coupon, letter)
             idx = self.tabs.addTab(card, f"Kupon {letter} · {num(coupon.odds)}")
             card.changed.connect(lambda i=idx, c=card: self.tabs.setTabText(i, f"Kupon {c.letter} · {num(c.coupon.odds)}"))
         n_matches = diag.stages[2].matches if len(diag.stages) > 2 else 0
-        msg = f"Ułożono {plural(len(coupons), 'kupon', 'kupony', 'kuponów')} z {plural(n_matches, 'meczu', 'meczów', 'meczów')}."
+        msg = (f"Ułożono {plural(len(coupons), 'kupon', 'kupony', 'kuponów')} z "
+               f"{plural(n_matches, 'meczu', 'meczów', 'meczów')} – zapisane w Historii.")
         if diag.notes:
             msg += " " + " ".join(diag.notes)
         self.status.setText(msg)

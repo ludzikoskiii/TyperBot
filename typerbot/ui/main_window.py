@@ -12,13 +12,11 @@ from typerbot.data.errors import STATE_LABELS
 from typerbot.fmt import plural
 from typerbot.services.diagnostics import sync_problems
 from typerbot.services.sync import SyncReport
-from typerbot.services.budget import EXCEEDED
 from typerbot.ui import theme
-from typerbot.ui.budget_widget import HELP, BudgetWidget
 from typerbot.ui.context import AppContext
 from typerbot.ui.diagnostics_view import ProblemsDialog
-from typerbot.ui.tab_coupons import CouponsTab
 from typerbot.ui.tab_generator import GeneratorTab
+from typerbot.ui.tab_history import HistoryTab
 from typerbot.ui.tab_matches import MatchesTab
 from typerbot.ui.tab_settings import SettingsTab
 from typerbot.ui.tab_stats import StatsTab
@@ -41,31 +39,22 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.matches = MatchesTab(ctx)
         self.generator = GeneratorTab(ctx)
-        self.coupons = CouponsTab(ctx)
+        self.history = HistoryTab(ctx)
         self.stats = StatsTab(ctx)
         self.settings = SettingsTab(ctx)
         for widget, title in ((self.matches, "Mecze"), (self.generator, "Generator kuponu"),
-                              (self.coupons, "Moje kupony"), (self.stats, "Statystyki"),
+                              (self.history, "Historia"), (self.stats, "Model (backtest)"),
                               (self.settings, "Ustawienia")):
             self.tabs.addTab(widget, title)
-
-        self.budget = BudgetWidget(ctx)
-        self.tabs.setCornerWidget(self.budget, Qt.TopRightCorner)
 
         self.banner = QFrame()
         self.banner.setProperty("role", "banner")
         bl = QHBoxLayout(self.banner)
         self.banner_text = label("", "warning", wrap=True)
         bl.addWidget(self.banner_text)
-        self.budget_banner = QFrame()
-        self.budget_banner.setProperty("role", "alert")
-        bbl = QHBoxLayout(self.budget_banner)
-        self.budget_banner_text = label("", "negative", wrap=True)
-        bbl.addWidget(self.budget_banner_text)
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addWidget(self.banner)
-        lay.addWidget(self.budget_banner)
         lay.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
         self._update_banner()
@@ -94,9 +83,6 @@ class MainWindow(QMainWindow):
         ctx.hub.message.connect(self.message_label.setText)
         ctx.hub.busy.connect(self._on_busy)
         ctx.hub.settings_changed.connect(self._on_settings)
-        for signal in (ctx.hub.coupons_changed, ctx.hub.settings_changed):
-            signal.connect(self._update_budget_banner)
-        self._update_budget_banner()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self._on_settings()
@@ -104,31 +90,20 @@ class MainWindow(QMainWindow):
         self._update_problems()
 
     def start(self) -> None:
-        """Pierwsze odświeżenie po otwarciu okna (w tle)."""
-        if self.ctx.demo or self.ctx.has_any_key():
-            self.refresh()
-        else:
-            self.matches.reload()
+        """Pierwsze odświeżenie po otwarciu okna (w tle) – działa bez kluczy (football-data.co.uk)."""
+        self.refresh()
 
     def _update_banner(self) -> None:
         if self.ctx.demo:
             self.banner_text.setText("Tryb demo: dane syntetyczne i tymczasowa baza. Kupony zapisane w tym trybie "
-                                     "znikną po zamknięciu. Prawdziwe dane: uruchom bez --demo i wpisz klucze API.")
+                                     "znikną po zamknięciu. Prawdziwe dane: uruchom bez --demo (klucze API są opcjonalne).")
             self.banner.show()
-        elif not self.ctx.has_any_key():
-            self.banner_text.setText("Brak kluczy API. Wpisz je w zakładce „Ustawienia” (opis zdobycia kluczy w "
-                                     "README), a potem kliknij „Odśwież dane”.")
+        elif not self.ctx.has_any_key() and not self.ctx.sync.matches.counts()["matches"]:
+            self.banner_text.setText("Kliknij „Odśwież dane” – główne źródło (football-data.co.uk) nie wymaga klucza. "
+                                     "Darmowe klucze w „Ustawieniach” są opcjonalne i uzupełniają dane.")
             self.banner.show()
         else:
             self.banner.hide()
-
-    def _update_budget_banner(self) -> None:
-        st = self.budget.status
-        if st and st.level == EXCEEDED:
-            self.budget_banner_text.setText(st.warning() + " Rozważ przerwę do końca miesiąca. " + HELP)
-            self.budget_banner.show()
-        else:
-            self.budget_banner.hide()
 
     def _on_settings(self) -> None:
         hours = self.ctx.settings().sync.fixtures_every_hours
@@ -170,10 +145,6 @@ class MainWindow(QMainWindow):
 
     def refresh(self, force: bool = False) -> None:
         if self.syncing:
-            return
-        if not (self.ctx.demo or self.ctx.has_any_key()):
-            self.ctx.hub.message.emit("Brak kluczy API – wpisz je w Ustawieniach.")
-            self._update_banner()
             return
         self.syncing = True
         self.refresh_btn.setEnabled(False)

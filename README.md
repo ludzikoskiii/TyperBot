@@ -16,7 +16,7 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 | 2 | Model prognoz (Dixon-Coles), backtest, strojenie parametrów | **gotowy** |
 | 3 | Ocena typów (marża, podatek, EV) i generator kuponu | **gotowy** |
 | 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | **gotowy** |
-| 5 | Kontrola budżetu, dopracowanie, plik .exe | **gotowy** |
+| 5 | Dopracowanie, plik .exe | **gotowy** |
 
 ## Uruchomienie na Windows
 
@@ -46,7 +46,7 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
    **Ustawienia** (opis niżej) – uzupełniają terminarz i brakujące kursy.
    **Pierwsza synchronizacja trwa kilka minut** – pobiera 10 sezonów historii z plików football-data.co.uk
    (bez klucza). Postęp widać w pasku stanu na dole; kolejne odświeżenia trwają kilka sekund.
-5. W zakładce **Statystyki → Backtest modelu** kliknij **Strojenie parametrów**, a potem
+5. W zakładce **Model (backtest)** kliknij **Strojenie parametrów**, a potem
    **Zapisz najlepsze ustawienia** – model i udział modelu w prognozie zostaną dobrane do Twoich danych.
 
    Tryb demo w wierszu poleceń (raport tekstowy):
@@ -72,28 +72,27 @@ test `TyperBot.exe --self-test`. Folder można skopiować na inny komputer z Win
 | Zakładka | Co zawiera |
 |---|---|
 | **Mecze** | nadchodzące mecze z prognozą 1 / X / 2 / >2,5 / BTTS (paski), liczba typów value; po kliknięciu meczu – wszystkie typy (prognoza, model, rynek, kurs, implikowane, EV, EV po podatku; value na zielono) i opis: forma, średnie, bilans spotkań |
-| **Generator kuponu** | kurs docelowy i tolerancja, zakres dat (dziś / jutro / X dni / własny), liczba zdarzeń, min. prawdopodobieństwo, tryb, ligi, rynki, stawka → 3 kupony z kursem przed/po podatku, szansą trafienia (prognoza, model, rynek), EV i wygraną; uzasadnienie każdego typu; **Wymień zdarzenie…**, **Zmień kurs…** (kurs z oferty), **Usuń zdarzenie**, **Zapisz jako postawiony…** |
-| **Moje kupony** | rejestr postawionych kuponów, automatyczne rozliczanie po meczach, szczegóły z wynikami, ręczne rozliczenie (np. wcześniejsza wypłata) |
-| **Statystyki** | bilans, ROI, trafność, krzywa bilansu, wynik w miesiącach, podział na rynki i ligi; podzakładka **Backtest modelu** ze skutecznością, kalibracją (wykres), wynikiem finansowym, mieszanką model + rynek i **strojeniem** parametrów |
-| **Ustawienia** | klucze API, ligi (włączanie, dodawanie), rynki, model, kursy, podatek, pobieranie danych, budżet, limity API, dopasowanie nazw drużyn |
+| **Generator kuponu** | kurs docelowy i tolerancja, zakres dat (dziś / jutro / X dni / własny), liczba zdarzeń, min. prawdopodobieństwo, tryb, ligi, rynki → 3 kupony z kursem przed i po podatku, szansą trafienia (prognoza, model, rynek) i EV; uzasadnienie każdego typu; **Wymień zdarzenie…**, **Zmień kurs…** (kurs z oferty), **Usuń zdarzenie**; przycisk **Diagnostyka** |
+| **Historia** | wszystkie ułożone kupony (ten sam zestaw typów tylko raz) z wynikiem **trafiony / nietrafiony / w trakcie**, rozliczane automatycznie; szczegóły z wynikami meczów; podzakładka **Statystyki**: trafność kuponów i pojedynczych typów osobno dla rynków i lig, wynik w jednostkach (1 kupon = 1 jednostka), krzywa wyniku, miesiące |
+| **Model (backtest)** | skuteczność, kalibracja (wykres), wynik w jednostkach, mieszanka model + rynek i **strojenie** parametrów |
+| **Ustawienia** | klucze API, ligi (włączanie, dodawanie), rynki, model, kursy, podatek, pobieranie danych, limity API i szacowane zużycie, dopasowanie nazw drużyn |
 
-Pasek stanu pokazuje każde źródło danych (zielona kropka = OK, w podpowiedzi szczegóły i pozostały limit).
+Pasek stanu pokazuje każde źródło danych (zielona kropka = OK, w podpowiedzi szczegóły i zużycie limitu).
 Dane odświeżają się w tle przy starcie i co 3 godziny (przycisk **Odśwież dane** – od razu); przy okazji
 rozliczają się zakończone kupony. Wszystkie obliczenia i pobieranie działają w tle – okno się nie zawiesza.
-W „Moje kupony” jest **Eksportuj do CSV…** (plik otwiera się w polskim Excelu).
+W „Historii” jest **Eksportuj do CSV…** (plik otwiera się w polskim Excelu).
 
-## Kontrola budżetu
+## Bez kwot – wynik w jednostkach
 
-- **Miesięczny limit stawek** ustawiasz w *Ustawienia → Budżet* (domyślnie 200 zł, 0 = bez limitu)
-  razem z progiem ostrzeżenia (domyślnie 80% limitu).
-- W prawym górnym rogu okna stale widać **wydatki i bilans bieżącego miesiąca** z paskiem wykorzystania
-  limitu: zielony, pomarańczowy od progu ostrzeżenia, czerwony po przekroczeniu. W podpowiedzi: kwota
-  w grze, liczba kuponów, ile zostało do limitu.
-- Zapis kuponu, który przekroczy limit, wymaga **potwierdzenia**; po przekroczeniu nad zakładkami
-  pojawia się czerwony komunikat.
-- Miesiąc liczony jest w czasie polskim: *wydano* = stawki kuponów postawionych w miesiącu (także
-  w grze), *wypłaty* = wypłaty rozliczone w miesiącu, *bilans* = wypłaty − wydano.
-- W wierszu poleceń: `python -m typerbot budzet` (podsumowanie), `python -m typerbot budzet --limit 300`.
+Aplikacja nie zna i nie zapisuje żadnych kwot (bez stawek, wypłat i limitów budżetu). Historia to lista
+kuponów, które ułożył generator – każdy trafia tam sam po wygenerowaniu, a ręczna zmiana kuponu
+(wymiana typu, kurs z oferty) aktualizuje wpis. Filtr **„Tylko skopiowane”** pokazuje kupony, które
+skopiowałeś (zwykle te, które zagrałeś) – statystyki liczą się wtedy tylko dla nich.
+
+Wynik liczony jest w **jednostkach**: każdy kupon to 1 jednostka stawki, trafiony zwraca
+**kurs × 0,88** (12% podatku od stawki; opcja „Bukmacher pokrywa podatek” w Ustawieniach),
+nietrafiony – 0. Zwrot (ROI) = wynik / liczba rozliczonych kuponów. Podatku od wygranej powyżej
+2280 zł aplikacja nie uwzględnia – zależy od kwoty.
 
 ## Klucze API
 
@@ -207,7 +206,7 @@ Dlaczego mieszanka z rynkiem: backtest pokazał, że sam model przy kuponach sys
 szansę trafienia (optymalizator wybiera typy, w których model najbardziej „nie zgadza się” z rynkiem –
 często są to jego błędy). Udział modelu dobiera `strojenie --zapisz` na Twoich danych
 (domyślnie 30%). Podatek od stawki płaci się raz za kupon, dlatego „value” pojedynczego typu jest
-liczone przed podatkiem, a **EV kuponu – po podatku** (12% od stawki i 10% od wygranej powyżej 2280 zł).
+liczone przed podatkiem, a **EV kuponu – po podatku** (12% od stawki).
 
 Generator:
 - bierze mecze z zakresu dat (dziś / jutro / najbliższe X dni / własny zakres), z wybranych lig i rynków;
@@ -215,10 +214,10 @@ Generator:
 - wybiera **najwyżej jeden typ z meczu** i szuka kombinacji o kursie w zakresie, maksymalizując
   szansę trafienia albo wartość (EV) – dokładnie, programowaniem dynamicznym;
 - układa **3 alternatywne kupony**, z których każdy ma co najmniej połowę innych meczów niż poprzednie;
-- przy kuponie pokazuje kurs przed i po podatku, szansę trafienia (prognoza, model, rynek), EV
-  i wygraną dla stawki, a przy każdym typie uzasadnienie: formę u siebie / na wyjeździe, średnie
-  bramek i xG, bilans bezpośrednich meczów, oczekiwane gole modelu oraz uwagi (beniaminek,
-  mało danych, różne ligi, kurs szacowany).
+- przy kuponie pokazuje kurs przed i po podatku, szansę trafienia (prognoza, model, rynek) i EV,
+  a przy każdym typie uzasadnienie: formę u siebie / na wyjeździe, średnie bramek, bilans
+  bezpośrednich meczów, oczekiwane gole modelu oraz uwagi (beniaminek, mało danych, różne ligi,
+  kurs szacunkowy).
 
 Szansa trafienia kuponu zakłada niezależność meczów (jeden typ z meczu ogranicza zależności).
 
@@ -251,7 +250,7 @@ modelu w mieszance z rynkiem; `--zapisz` zapisuje wszystko w ustawieniach.
 ## Wiersz poleceń
 
 Wszystko, co robi interfejs, jest też dostępne jako polecenia (`python -m typerbot --help`):
-`sync`, `status`, `mecze`, `prognozy`, `typy`, `kupon`, `diagnoza`, `backtest`, `strojenie`, `budzet`, `klucz`,
+`sync`, `status`, `mecze`, `prognozy`, `typy`, `kupon`, `diagnoza`, `backtest`, `strojenie`, `klucz`,
 `csv`, `druzyny`, `demo`, `gui`.
 
 `python -m typerbot diagnoza` (te same parametry co `kupon`) pokazuje, ile meczów i kursów przyszło z każdego
@@ -305,9 +304,9 @@ typerbot/
 ├── services/sync.py            synchronizacja z izolacją błędów źródeł
 ├── services/predict.py         prognozy nadchodzących meczów (zapis w bazie)
 ├── services/coupons.py         generator kuponów, wymiana zdarzeń, kurs ręczny
-├── services/register.py        rejestr postawionych kuponów i automatyczne rozliczanie
-├── services/stats.py           bilans, ROI, trafność – ogółem, miesiące, rynki, ligi
-├── services/budget.py          miesięczny limit stawek, wydatki i bilans miesiąca
+├── services/register.py        historia wygenerowanych kuponów i automatyczne rozliczanie (w jednostkach)
+├── services/stats.py           trafność kuponów i typów, wynik w jednostkach – miesiące, rynki, ligi
+├── services/diagnostics.py     diagnostyka generatora: źródła, filtry, powód braku kuponu
 ├── ui/                         interfejs PySide6: okno, 5 zakładek, wykresy, motyw, zadania w tle
 ├── demo/                       syntetyczny świat meczów i transport udający API
 └── cli.py                      polecenia wiersza poleceń

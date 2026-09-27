@@ -49,15 +49,6 @@ def test_bookmaker_pays_tax_option():
     assert payout(10, 2.0, tax) == pytest.approx(20.0)
 
 
-def test_win_tax_above_threshold():
-    tax = TaxSettings()
-    below = payout(100, 25.0, tax)            # 88 · 25 = 2200 zł – bez podatku od wygranej
-    above = payout(100, 30.0, tax)            # 88 · 30 = 2640 zł – 10% podatku
-    assert below == pytest.approx(2200.0)
-    assert above == pytest.approx(2640.0 * 0.9)
-    assert payout(100, 30.0, TaxSettings(win_tax_enabled=False)) == pytest.approx(2640.0)
-
-
 def test_expected_value_before_and_after_tax():
     tax = TaxSettings()
     assert expected_value(0.55, 2.0) == pytest.approx(0.10)             # value przed podatkiem

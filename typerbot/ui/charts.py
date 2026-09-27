@@ -64,8 +64,9 @@ def _tooltip(text: str) -> None:
     QToolTip.showText(QCursor.pos(), text)
 
 
-def equity_chart(points: list[tuple[str, float]], title: str = "Bilans narastająco (zł)") -> QChartView:
-    """Linia skumulowanego bilansu w czasie (daty RRRR-MM-DD)."""
+def equity_chart(points: list[tuple[str, float]], title: str = "Wynik narastająco (jednostki)",
+                 unit: str = "j.") -> QChartView:
+    """Linia skumulowanego wyniku w czasie (daty RRRR-MM-DD); 1 kupon = 1 jednostka."""
     chart = _base_chart(title)
     series = QLineSeries()
     pen = QPen(QColor(theme.ACCENT))
@@ -90,7 +91,7 @@ def equity_chart(points: list[tuple[str, float]], title: str = "Bilans narastaj�
     pad = max(1.0, (hi - lo) * 0.1)
     y.setRange(lo - pad, hi + pad)
     y.applyNiceNumbers()
-    y.setLabelFormat("%.0f")
+    y.setLabelFormat("%.0f" if hi - lo > 8 else "%.1f")
     for axis in (x, y):
         _style_axis(axis)
     chart.addAxis(x, Qt.AlignBottom)
@@ -110,12 +111,14 @@ def equity_chart(points: list[tuple[str, float]], title: str = "Bilans narastaj�
     zero.attachAxis(x)
     zero.attachAxis(y)
     series.hovered.connect(lambda p, state: _tooltip(
-        f"{QDateTime.fromMSecsSinceEpoch(int(p.x())).toString('dd.MM.yyyy')}: {p.y():+.2f} zł".replace(".", ","))
+        QDateTime.fromMSecsSinceEpoch(int(p.x())).toString("dd.MM.yyyy") + ": "
+        + f"{p.y():+.2f}".replace(".", ",") + f" {unit}")
         if state else QToolTip.hideText())
     return view(chart)
 
 
-def profit_bars(labels: list[str], values: list[float], title: str = "Wynik w miesiącach (zł)") -> QChartView:
+def profit_bars(labels: list[str], values: list[float], title: str = "Wynik w miesiącach (jednostki)",
+                unit: str = "j.") -> QChartView:
     """Słupki zysku (w górę) i straty (w dół) – po jednym na miesiąc."""
     chart = _base_chart(title)
     gain, loss = QBarSet("zysk"), QBarSet("strata")
@@ -146,7 +149,8 @@ def profit_bars(labels: list[str], values: list[float], title: str = "Wynik w mi
     series.attachAxis(x)
     series.attachAxis(y)
     series.hovered.connect(lambda state, idx, _set: _tooltip(
-        f"{labels[idx]}: {values[idx]:+.2f} zł".replace(".", ",")) if state and idx < len(values) else QToolTip.hideText())
+        f"{labels[idx]}: " + f"{values[idx]:+.2f}".replace(".", ",") + f" {unit}")
+        if state and idx < len(values) else QToolTip.hideText())
     return view(chart)
 
 

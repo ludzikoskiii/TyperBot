@@ -31,7 +31,7 @@ def test_each_thread_gets_own_connection(db):
 def test_settings_roundtrip_and_defaults(db):
     store = SettingsStore(db)
     s = store.load()
-    assert s.tax.stake_tax == 0.12 and s.tax.win_tax_threshold == 2280.0
+    assert s.tax.stake_tax == 0.12 and not s.tax.bookmaker_pays_tax and not hasattr(s, 'budget')
     assert s.odds.bookmaker == "superbet" and s.odds.reference == "bookmaker"
     assert s.sync.csv_seasons == 10 and s.sync.odds_api_monthly_budget < 500 and s.sync.oddspapi_monthly_budget < 250
     s.coupon.target_odds = 7.5

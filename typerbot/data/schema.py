@@ -223,4 +223,19 @@ MIGRATIONS.append(
     """
 )
 
+# --- v5: historia kuponów bez kwot – wynik w jednostkach, kupony wygenerowane i skopiowane ---------------
+MIGRATIONS.append(
+    """
+    ALTER TABLE coupons ADD COLUMN legs_key TEXT NOT NULL DEFAULT '';
+    ALTER TABLE coupons ADD COLUMN copied INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE coupons ADD COLUMN target_odds REAL;
+    ALTER TABLE coupons ADD COLUMN returned REAL;
+    ALTER TABLE coupon_legs ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0;
+    UPDATE coupons SET copied = 1;
+    UPDATE coupons SET returned = payout / stake WHERE payout IS NOT NULL AND stake > 0;
+    CREATE INDEX idx_coupons_legs_key ON coupons(legs_key);
+    DELETE FROM settings WHERE key LIKE 'meta.budget%';
+    """
+)
+
 SCHEMA_VERSION = len(MIGRATIONS)

@@ -1,8 +1,8 @@
 """Kursy: marża bukmachera, prawdopodobieństwo implikowane, podatek, wypłata.
 
-Podatek w Polsce:
-  * 12% od stawki – do gry trafia 88% kwoty (chyba że bukmacher pokrywa podatek),
-  * 10% od wygranej, jeśli wypłata przekracza 2280 zł (od całej kwoty wygranej).
+Podatek w Polsce: 12% od stawki – do gry trafia 88% stawki (chyba że bukmacher pokrywa podatek).
+Aplikacja liczy wyniki w jednostkach (1 kupon = 1 jednostka), więc nie uwzględnia podatku od
+wygranej powyżej 2280 zł – zależy on od kwoty.
 """
 
 from __future__ import annotations
@@ -55,19 +55,16 @@ def effective_stake(stake: float, tax: TaxSettings) -> float:
 
 
 def payout(stake: float, odds: float, tax: TaxSettings) -> float:
-    """Kwota wypłaty przy trafieniu (po podatku od stawki i od wygranej)."""
-    gross = effective_stake(stake, tax) * odds
-    if tax.win_tax_enabled and gross > tax.win_tax_threshold:
-        gross -= gross * tax.win_tax_rate
-    return gross
+    """Zwrot przy trafieniu po podatku od stawki (stawka w jednostkach – aplikacja nie używa kwot)."""
+    return effective_stake(stake, tax) * odds
 
 
 def odds_after_tax(odds: float, tax: TaxSettings) -> float:
-    """Kurs „na rękę”: ile wraca z 1 zł wydanego na zakład (dla małych stawek)."""
+    """Kurs po podatku: ile wraca z 1 jednostki stawki (kurs × 0,88 przy podatku 12%)."""
     return odds * (1.0 if tax.bookmaker_pays_tax else 1.0 - tax.stake_tax)
 
 
 def expected_value(probability: float, odds: float, tax: TaxSettings | None = None) -> float:
-    """EV na 1 zł stawki. Bez podatku: p·kurs − 1; z podatkiem: p·kurs·0,88 − 1."""
+    """EV na 1 jednostkę stawki. Bez podatku: p·kurs − 1; z podatkiem: p·kurs·0,88 − 1."""
     factor = 1.0 if tax is None else odds_after_tax(1.0, tax)
     return probability * odds * factor - 1.0

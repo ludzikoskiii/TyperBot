@@ -30,11 +30,8 @@ class ModelSettings:
 
 @dataclass
 class TaxSettings:
-    stake_tax: float = 0.12           # podatek od stawki
+    stake_tax: float = 0.12           # podatek od stawki – kurs po podatku = kurs × 0,88
     bookmaker_pays_tax: bool = False  # bukmacher pokrywa podatek
-    win_tax_enabled: bool = True      # 10% od wygranej powyżej progu
-    win_tax_rate: float = 0.10
-    win_tax_threshold: float = 2280.0
 
 
 @dataclass
@@ -63,7 +60,6 @@ class CouponSettings:
     include_low_data: bool = False
     min_difference: float = 0.5      # alternatywne kupony różnią się min. połową zdarzeń
     alternatives: int = 3
-    stake: float = 10.0               # stawka do wyliczenia wygranej i podatku od wygranej
 
 
 @dataclass
@@ -76,20 +72,12 @@ class SyncSettings:
 
 
 @dataclass
-class BudgetSettings:
-    monthly_limit: float = 200.0      # 0 = bez limitu
-    warn_at: float = 0.8              # ostrzeżenie po wykorzystaniu 80% limitu
-    currency: str = "PLN"
-
-
-@dataclass
 class Settings:
     model: ModelSettings = field(default_factory=ModelSettings)
     tax: TaxSettings = field(default_factory=TaxSettings)
     odds: OddsSettings = field(default_factory=OddsSettings)
     coupon: CouponSettings = field(default_factory=CouponSettings)
     sync: SyncSettings = field(default_factory=SyncSettings)
-    budget: BudgetSettings = field(default_factory=BudgetSettings)
     markets_enabled: list[str] = field(default_factory=lambda: list(MARKETS))
 
     def to_json(self) -> str:

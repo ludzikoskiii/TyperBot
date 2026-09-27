@@ -29,7 +29,7 @@ def coupon_settings_from_args(base: CouponSettings, args: argparse.Namespace) ->
     elif getattr(args, "dni", None):
         cfg.date_range, cfg.days_ahead = "days", args.dni
     for attr, field in (("kurs", "target_odds"), ("tolerancja", "tolerance"), ("min", "min_events"),
-                        ("max", "max_events"), ("min_p", "min_probability"), ("tryb", "mode"), ("stawka", "stake")):
+                        ("max", "max_events"), ("min_p", "min_probability"), ("tryb", "mode")):
         value = getattr(args, attr, None)
         if value is not None:
             setattr(cfg, field, value)
@@ -77,8 +77,7 @@ def print_coupon(coupon: Coupon, letter: str, with_rationale: bool = True) -> No
          f"{plural(len(coupon.legs), 'zdarzenie', 'zdarzenia', 'zdarzeń')}{range_txt}")
     _out(f"  szansa trafienia: {_pct(coupon.probability, 1)} (model {_pct(coupon.probability_model, 1)}"
          + (f", rynek {_pct(market, 1)}" if market is not None else "") + ")"
-         f" · EV po podatku {signed_pct(coupon.ev)} (przed podatkiem {signed_pct(coupon.ev_before_tax)})"
-         f" · stawka {_pl(coupon.stake)} zł → wygrana {_pl(coupon.payout)} zł")
+         f" · EV po podatku {signed_pct(coupon.ev)} (przed podatkiem {signed_pct(coupon.ev_before_tax)})")
     for i, leg in enumerate(coupon.legs, 1):
         s, m = leg.selection, leg.match
         odds = _pl(s.odds) if s.odds else "–"
@@ -126,18 +125,21 @@ def run_coupon_command(db: Database, args: argparse.Namespace, sync_service=None
     if not coupons:
         _out("\n" + result.diagnosis.to_text())
         return 1
+    service.record(coupons, cfg.target_odds)
     if getattr(args, "kurs_reczny", None):
         for item in args.kurs_reczny:
             leg_txt, value = item.split("=")
             ci, li = _parse_leg(leg_txt)
             coupon = coupons[ci]
             coupons[ci] = service.set_manual_odds(coupon, coupon.legs[li - 1].match.match_id, float(value.replace(",", ".")))
+            service.update_record(coupons[ci])
     if getattr(args, "wymien", None):
         ci, li = _parse_leg(args.wymien)
         coupon = coupons[ci]
         options = print_swap_options(service, coupon, LETTERS[ci], li, cfg)
         if args.na and options:
             coupons[ci] = service.swap(coupon, coupon.legs[li - 1].match.match_id, options[args.na - 1])
+            service.update_record(coupons[ci])
             _out(f"\nPo wymianie {args.wymien.upper()} na zamiennik nr {args.na}:")
             print_coupon(coupons[ci], LETTERS[ci])
             return 0
@@ -165,5 +167,4 @@ def add_coupon_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--tryb", choices=["probability", "value"])
     p.add_argument("--ligi", help="np. PL,EKS")
     p.add_argument("--rynki", help="np. 1X2,DC,OU,BTTS")
-    p.add_argument("--stawka", type=float)
     p.add_argument("--z-malo-danych", action="store_true", help="dopuść drużyny z małą liczbą meczów")

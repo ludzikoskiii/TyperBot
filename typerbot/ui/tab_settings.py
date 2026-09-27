@@ -180,15 +180,11 @@ class SettingsTab(QWidget):
         tax_box = QGroupBox("Podatek")
         self.stake_tax = _dspin(0, 50, 1, 1, " %")
         self.pays_tax = QCheckBox("Bukmacher pokrywa podatek od stawki")
-        self.win_tax = QCheckBox("Podatek od wygranej powyżej progu")
-        self.win_tax_rate = _dspin(0, 50, 1, 1, " %")
-        self.win_tax_threshold = _dspin(0, 1_000_000, 2, 10, " zł")
         tf = QFormLayout(tax_box)
         tf.addRow("Podatek od stawki", self.stake_tax)
         tf.addRow("", self.pays_tax)
-        tf.addRow("", self.win_tax)
-        tf.addRow("Stawka podatku od wygranej", self.win_tax_rate)
-        tf.addRow("Próg wygranej", self.win_tax_threshold)
+        tf.addRow(label("Kurs po podatku = kurs × 0,88. Wyniki w historii liczone są w jednostkach "
+                        "(1 kupon = 1 jednostka) – aplikacja nie używa kwot.", "muted", wrap=True))
 
         sync_box = QGroupBox("Pobieranie danych")
         self.fixtures_hours = _dspin(0.5, 48, 1, 0.5, " h")
@@ -206,15 +202,6 @@ class SettingsTab(QWidget):
                         "budżet miesięczny rozłożony równo na dni – limit planu nie wyczerpie się.", "muted",
                         wrap=True))
 
-        budget_box = QGroupBox("Budżet")
-        self.monthly_limit = _dspin(0, 1_000_000, 2, 10, " zł")
-        self.warn_at = _spin(10, 100, " % limitu")
-        bf = QFormLayout(budget_box)
-        bf.addRow("Miesięczny limit stawek", self.monthly_limit)
-        bf.addRow("Ostrzegaj od", self.warn_at)
-        bf.addRow(label("0 zł = bez limitu. Aplikacja pokazuje wydatki i bilans miesiąca w prawym górnym rogu, "
-                        "ostrzega przy zapisie kuponu ponad limit i wyświetla czerwony komunikat po jego "
-                        "przekroczeniu.", "muted", wrap=True))
 
         quota_box = QGroupBox("Limity API i szacowane zużycie w tym miesiącu")
         self.quota_table = make_table(["Źródło", "Okres", "Zużyte", "Limit", "Zostało", "Dziś zapytań", "Stan"],
@@ -247,9 +234,8 @@ class SettingsTab(QWidget):
         content = QWidget()
         grid = QGridLayout(content)
         grid.addWidget(keys_box, 0, 0, 1, 2)
-        grid.addWidget(leagues_box, 1, 0, 2, 1)
+        grid.addWidget(leagues_box, 1, 0)
         grid.addWidget(markets_box, 1, 1)
-        grid.addWidget(budget_box, 2, 1)
         grid.addWidget(model_box, 3, 0)
         grid.addWidget(odds_box, 3, 1)
         grid.addWidget(tax_box, 4, 0)
@@ -305,16 +291,11 @@ class SettingsTab(QWidget):
         self.cache_hours.setValue(s.odds.cache_hours)
         self.stake_tax.setValue(s.tax.stake_tax * 100)
         self.pays_tax.setChecked(s.tax.bookmaker_pays_tax)
-        self.win_tax.setChecked(s.tax.win_tax_enabled)
-        self.win_tax_rate.setValue(s.tax.win_tax_rate * 100)
-        self.win_tax_threshold.setValue(s.tax.win_tax_threshold)
         self.fixtures_hours.setValue(s.sync.fixtures_every_hours)
         self.csv_seasons.setValue(s.sync.csv_seasons)
         self.horizon.setValue(s.sync.odds_horizon_days)
         self.odds_api_budget.setValue(s.sync.odds_api_monthly_budget)
         self.papi_budget.setValue(s.sync.oddspapi_monthly_budget)
-        self.monthly_limit.setValue(s.budget.monthly_limit)
-        self.warn_at.setValue(round(s.budget.warn_at * 100))
 
     def collect(self) -> Settings:
         s = self.ctx.settings()
@@ -332,16 +313,11 @@ class SettingsTab(QWidget):
         s.odds.cache_hours = self.cache_hours.value()
         s.tax.stake_tax = self.stake_tax.value() / 100
         s.tax.bookmaker_pays_tax = self.pays_tax.isChecked()
-        s.tax.win_tax_enabled = self.win_tax.isChecked()
-        s.tax.win_tax_rate = self.win_tax_rate.value() / 100
-        s.tax.win_tax_threshold = self.win_tax_threshold.value()
         s.sync.fixtures_every_hours = self.fixtures_hours.value()
         s.sync.csv_seasons = self.csv_seasons.value()
         s.sync.odds_horizon_days = self.horizon.value()
         s.sync.odds_api_monthly_budget = self.odds_api_budget.value()
         s.sync.oddspapi_monthly_budget = self.papi_budget.value()
-        s.budget.monthly_limit = self.monthly_limit.value()
-        s.budget.warn_at = self.warn_at.value() / 100
         s.coupon.markets = [m for m in s.coupon.markets if m in s.markets_enabled] or list(s.markets_enabled)
         return s
 

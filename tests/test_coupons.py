@@ -184,15 +184,27 @@ def test_swap_and_manual_odds_recalculate(coupon_service):
     assert len(smaller.legs) == len(manual.legs) - 1
 
 
-def test_win_tax_applies_for_large_stake(coupon_service):
+def test_coupon_odds_after_tax_in_units(coupon_service):
     coupon = coupon_service.generate(demo_cfg())[0]
-    from dataclasses import replace
-    big = replace(coupon, stake=1000.0)       # wypłata > 2280 zł -> 10% podatku od wygranej
-    gross = 1000 * 0.88 * coupon.odds
-    assert big.payout == pytest.approx(gross * 0.9)
-    assert big.odds_after_tax < coupon.odds_after_tax
+    assert coupon.odds_after_tax == pytest.approx(coupon.odds * 0.88)
+    assert not hasattr(coupon, "stake") and not hasattr(coupon, "payout")
 
 
+def test_generated_coupons_are_recorded_once(coupon_service):
+    cfg = demo_cfg()
+    coupons = coupon_service.generate(cfg)
+    ids = coupon_service.record(coupons, cfg.target_odds)
+    assert len(set(ids)) == len(coupons) and all(c.history_id for c in coupons)
+    again = coupon_service.generate(cfg)
+    assert coupon_service.record(again, cfg.target_odds) == ids          # te same kupony – bez duplikatów
+    swapped = coupon_service.swap(again[0], again[0].legs[0].match.match_id,
+                                  coupon_service.swap_options(again[0], again[0].legs[0].match.match_id, cfg)[0])
+    new_id = coupon_service.update_record(swapped)     # ten sam wpis albo istniejący kupon z takim zestawem
+    assert new_id in ids
+    from typerbot.services.register import CouponRegister
+
+    stored = CouponRegister(coupon_service.db).get(new_id)
+    assert {leg.match_id for leg in stored.legs} == swapped.match_ids
 def test_date_windows(coupon_service):
     local = coupon_service.date_window(demo_cfg(date_range="tomorrow"))
     assert (local[1] - local[0]) <= timedelta(days=1) and local[0] > NOW

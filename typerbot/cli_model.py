@@ -28,7 +28,7 @@ def _num(x: float | None, digits: int = 3) -> str:
 
 
 def _money(x: float) -> str:
-    return f"{x:+,.2f} zł".replace(",", " ").replace(".", ",")
+    return f"{x:+,.2f}".replace(",", " ").replace(".", ",") + " j."
 
 
 def print_model_settings(m: ModelSettings) -> None:
@@ -99,7 +99,7 @@ def print_backtest(res: BacktestResult, coupon: CouponSettings) -> None:
 
     s = res.singles
     tax = "pokrywa bukmacher" if res.tax.bookmaker_pays_tax else f"{res.tax.stake_tax:.0%} od stawki"
-    _out(f"\n3) WYNIK FINANSOWY – stawka {cfg.stake:.0f} zł, podatek: {tax}"
+    _out(f"\n3) WYNIK W JEDNOSTKACH – 1 zakład / kupon = 1 jednostka, podatek: {tax}"
          + (f", kursy obniżone o {cfg.odds_haircut:.0%}" if cfg.odds_haircut else ""))
     _out(f"  Pojedyncze typy „value” (prognoza·kurs − 1 > {cfg.value_threshold:.0%}, max 1 na mecz): {s.bets} zakładów, "
          f"trafność {_pct(s.hit_rate)}, śr. kurs {s.avg_odds:.2f}, wynik {_money(s.profit)}, ROI {_pct(s.roi)}")

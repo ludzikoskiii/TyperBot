@@ -49,7 +49,7 @@ EDGE_BUCKETS = [("0–5%", 0.05), ("5–10%", 0.10), ("10–20%", 0.20), ("20%+"
 class BacktestConfig:
     leagues: list[str]
     seasons: list[int]
-    stake: float = 10.0                 # stawka pojedynczego zakładu / kuponu
+    stake: float = 1.0                  # stawka pojedynczego zakładu / kuponu – 1 jednostka
     value_threshold: float = 0.0        # typ „value”: p·kurs − 1 > próg (przed podatkiem)
     bet_odds: str = "pre"               # kursy do symulacji: 'pre' (przedmeczowe) lub 'close'
     odds_haircut: float = 0.0           # obniżka kursów, np. 0.03 ≈ wyższa marża bukmachera
