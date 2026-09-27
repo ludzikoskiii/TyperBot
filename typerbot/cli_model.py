@@ -32,7 +32,8 @@ def _money(x: float) -> str:
 
 
 def print_model_settings(m: ModelSettings) -> None:
-    _out(f"Model: Dixon-Coles{' (z korektą ρ)' if m.dixon_coles else ''}, ostatnie {m.last_matches} meczów drużyny, "
+    _out(f"Model: Dixon-Coles{' (z korektą ρ)' if m.dixon_coles else ''} + ranking Elo ({m.elo_weight:.0%} Elo, "
+         f"K={m.elo_k:g}), ostatnie {m.last_matches} meczów drużyny, "
          f"półokres wygaszania {m.half_life_days:g} dni, udział xG {m.xg_weight:.0%}, "
          f"regularyzacja {m.regularization:g}, „mało danych” < {m.min_matches} meczów w roku, "
          f"udział modelu w prognozie {m.model_weight:.0%} (reszta: rynek)")

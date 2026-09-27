@@ -8,9 +8,12 @@ Dla każdego typu liczymy trzy prawdopodobieństwa:
 Typ jest „value”, gdy prognoza·kurs > 1 (przed podatkiem – podatek od stawki płaci
 się raz za cały kupon). Osobno pokazujemy EV po podatku dla gry pojedynczej.
 
-Kurs szacunkowy: gdy dla rynku nie ma kursu w żadnym źródle, wyliczamy go z kursów,
-które są – podwójną szansę z 1X2, a BTTS i powyżej/poniżej 2,5 z oczekiwanych goli
-dopasowanych do kursów 1X2 (i powyżej/poniżej, jeśli są) – z marżą jak w 1X2.
+Kurs szacunkowy („kurs szacunkowy – sprawdź u bukmachera”):
+  * gdy mecz ma kursy 1X2, a brakuje innych rynków – liczymy je z kursów, które są: podwójną
+    szansę z 1X2, a BTTS i powyżej/poniżej 2,5 z oczekiwanych goli dopasowanych do kursów 1X2
+    (i powyżej/poniżej, jeśli są) – z marżą jak w 1X2;
+  * gdy mecz nie ma żadnych kursów (np. terminarz tylko z openfootball) – z prognozy modelu,
+    pomniejszonej o typową marżę bukmachera z ustawień: kurs = 1 / (p · (1 + marża)).
 Taki kurs jest wyraźnie oznaczony: u bukmachera może być inny.
 """
 
@@ -36,6 +39,8 @@ MARKET_GROUPS: dict[str, list[Key]] = {
 }
 ODDS_SOURCE_LABELS = {"bookmaker": "", "average": "średnia", "best": "najlepszy", "estimated": "szacunkowy",
                       "manual": "ręczny"}
+ESTIMATED_NOTE = "kurs szacunkowy – sprawdź u bukmachera"
+BOOKMAKER_REFERENCES = ("pinnacle", "bet365")     # kolumny bukmacherów w plikach football-data.co.uk
 MARGIN_RANGE = (1.03, 1.10)      # marża kursu szacunkowego (jak w 1X2, w rozsądnych granicach)
 
 
@@ -46,7 +51,7 @@ class SelectionEval:
     p_model: float
     p_market: float | None          # rynek bez marży (średnia kursów)
     probability: float              # prognoza użyta do oceny i kuponu
-    odds: float | None              # kurs referencyjny (np. Superbet)
+    odds: float | None              # kurs referencyjny (średnia rynkowa, najwyższy albo bukmacher)
     odds_source: str                # 'bookmaker' | 'average' | 'best' | 'estimated' | 'manual'
     odds_average: float | None
     implied: float | None           # prawdopodobieństwo z kursu referencyjnego bez marży
@@ -67,6 +72,10 @@ class SelectionEval:
 
     def ev_after_tax(self, settings: Settings) -> float | None:
         return None if self.odds is None else expected_value(self.probability, self.odds, settings.tax)
+
+    @property
+    def estimated(self) -> bool:
+        return self.odds_source == "estimated"
 
     @property
     def source_label(self) -> str:
@@ -143,7 +152,9 @@ def evaluate_match(match_id: int, model_probs: dict[Key, float], odds_rows: Iter
                    markets: Iterable[str] | None = None, manual_odds: dict[Key, float] | None = None
                    ) -> list[SelectionEval]:
     """Ocena wszystkich typów meczu dla włączonych rynków."""
-    view: OddsView = odds_view(list(odds_rows), settings.odds.bookmaker)
+    ref_mode = settings.odds.reference
+    book = ref_mode if ref_mode in BOOKMAKER_REFERENCES else ""
+    view: OddsView = odds_view(list(odds_rows), book)
     method = settings.odds.margin_method
     market_fair = fair_probabilities(view.average, method)
     book_fair = fair_probabilities(view.bookmaker, method)
@@ -162,9 +173,9 @@ def evaluate_match(match_id: int, model_probs: dict[Key, float], odds_rows: Iter
     reference: dict[Key, tuple[float, str]] = {}
     for key, price in view.average.items():
         reference[key] = (price, "average")
-    if settings.odds.reference == "best":
+    if ref_mode == "best":
         reference.update({k: (p, "best") for k, p in view.best.items()})
-    elif settings.odds.reference == "bookmaker":
+    elif book:
         reference.update({k: (p, "bookmaker") for k, p in view.bookmaker.items()})
     # Rynki bez oferty – kurs szacunkowy: podwójna szansa z 1X2, BTTS i powyżej/poniżej z oczekiwanych
     # goli; marża jak w 1X2 bukmachera referencyjnego (w granicach MARGIN_RANGE).
@@ -174,6 +185,12 @@ def evaluate_match(match_id: int, model_probs: dict[Key, float], odds_rows: Iter
         dc_fair = _dc_from_1x2(_fair(ref_1x2, MARKET_GROUPS["1X2"], method))
         for key, p in {**dc_fair, **derived}.items():
             if key not in reference and p > 0:
+                reference[key] = (round(max(1.01, 1 / (p * margin)), 2), "estimated")
+    # Mecz bez żadnych kursów – kurs szacunkowy z prognozy modelu z typową marżą bukmachera.
+    if not reference:
+        margin = 1.0 + min(max(settings.odds.estimated_margin, 0.0), 0.5)
+        for key, p in model_probs.items():
+            if 0.0 < p < 1.0:
                 reference[key] = (round(max(1.01, 1 / (p * margin)), 2), "estimated")
     for key, price in (manual_odds or {}).items():
         reference[key] = (price, "manual")
@@ -195,6 +212,6 @@ def evaluate_match(match_id: int, model_probs: dict[Key, float], odds_rows: Iter
             out.append(SelectionEval(
                 match_id=match_id, key=key, p_model=p_model, p_market=p_market, probability=prob,
                 odds=odds, odds_source=source, odds_average=view.average.get(key), implied=implied,
-                bookmaker=settings.odds.bookmaker if source == "bookmaker" else "",
+                bookmaker=book if source == "bookmaker" else "",
             ))
     return out

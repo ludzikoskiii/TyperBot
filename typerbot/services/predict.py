@@ -1,8 +1,9 @@
 """Prognozy dla nadchodzących meczów.
 
-Model jest dopasowywany do wszystkich lig z bazy naraz (wspólny model z siłą
-lig), dzięki czemu Liga Mistrzów korzysta z formy drużyn w lidze krajowej.
-Wyniki trafiają do tabeli `predictions` – z niej korzysta interfejs i generator.
+Model (Dixon-Coles + ranking Elo) jest dopasowywany do wszystkich lig z bazy naraz;
+drużyny z samymi wynikami (bez długiej historii w oknie modelu) i reprezentacje dostają
+prognozę z rankingu Elo. Wyniki trafiają do tabeli `predictions` – z niej korzysta
+interfejs i generator.
 """
 
 from __future__ import annotations
@@ -16,10 +17,9 @@ from typerbot.data.db import Database
 from typerbot.data.records import to_iso
 from typerbot.model.data import load_matches
 from typerbot.model.markets import Key
-from typerbot.model.predictor import FittedModel, Prediction
+from typerbot.model.predictor import HybridModel, Prediction
 
-
-_MODEL_CACHE: dict[tuple, FittedModel | None] = {}
+_MODEL_CACHE: dict[tuple, HybridModel | None] = {}
 
 
 @dataclass
@@ -48,9 +48,9 @@ class PredictionService:
         self.db = db
         self.settings_store = SettingsStore(db)
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self.model: FittedModel | None = None
+        self.model: HybridModel | None = None
 
-    def fit(self, at: datetime | None = None, settings: ModelSettings | None = None) -> FittedModel | None:
+    def fit(self, at: datetime | None = None, settings: ModelSettings | None = None) -> HybridModel | None:
         """Dopasowanie modelu na danych do chwili `at`. Wynik jest zapamiętywany, dopóki nie zmienią się
         dane, ustawienia ani (w przybliżeniu do 10 minut) chwila dopasowania – kolejne generowania są szybkie."""
         settings = settings or self.settings_store.load().model
@@ -62,7 +62,7 @@ class PredictionService:
             self.model = _MODEL_CACHE[key]
             return self.model
         table = load_matches(self.db)
-        self.model = FittedModel.fit(table, at, settings) if len(table) else None
+        self.model = HybridModel.fit(table, at, settings) if len(table) else None
         if len(_MODEL_CACHE) >= 4:
             _MODEL_CACHE.pop(next(iter(_MODEL_CACHE)))
         _MODEL_CACHE[key] = self.model
@@ -73,17 +73,17 @@ class PredictionService:
         if model is None:
             return []
         rows = self.db.query(
-            "SELECT m.id, m.league_code, m.kickoff, m.home_team_id, m.away_team_id, h.name AS home, a.name AS away "
+            "SELECT m.id, m.league_code, m.kickoff, m.home_team_id, m.away_team_id, m.neutral, h.name AS home, "
+            "a.name AS away "
             "FROM matches m JOIN teams h ON h.id = m.home_team_id JOIN teams a ON a.id = m.away_team_id "
             "WHERE m.status = 'SCHEDULED' AND m.kickoff >= ? AND m.kickoff < ? ORDER BY m.kickoff",
             (to_iso(start), to_iso(end)),
         )
         out = []
         for r in rows:
-            pred = model.predict(r["home_team_id"], r["away_team_id"], r["league_code"])
-            hi, ai = model.team_info(r["home_team_id"]), model.team_info(r["away_team_id"])
+            pred = model.predict(r["home_team_id"], r["away_team_id"], r["league_code"], neutral=bool(r["neutral"]))
             out.append(MatchPrediction(r["id"], r["league_code"], r["kickoff"], r["home"], r["away"], pred,
-                                       hi.n_window if hi else 0, ai.n_window if ai else 0))
+                                       model.team_matches(r["home_team_id"]), model.team_matches(r["away_team_id"])))
         if save:
             self._save(out)
         return out
@@ -93,17 +93,18 @@ class PredictionService:
         with self.db.transaction() as conn:
             conn.executemany(
                 "INSERT INTO predictions(match_id, created_at, lam_home, lam_away, rho, probs, low_data_home, "
-                "low_data_away, new_home, new_away, cross_league, home_matches, away_matches) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(match_id) DO UPDATE SET "
+                "low_data_away, new_home, new_away, cross_league, home_matches, away_matches, method) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(match_id) DO UPDATE SET "
                 "created_at = excluded.created_at, lam_home = excluded.lam_home, lam_away = excluded.lam_away, "
                 "rho = excluded.rho, probs = excluded.probs, low_data_home = excluded.low_data_home, "
                 "low_data_away = excluded.low_data_away, new_home = excluded.new_home, new_away = excluded.new_away, "
                 "cross_league = excluded.cross_league, home_matches = excluded.home_matches, "
-                "away_matches = excluded.away_matches",
+                "away_matches = excluded.away_matches, method = excluded.method",
                 [(p.match_id, created, p.prediction.lam_home, p.prediction.lam_away, p.prediction.rho,
                   json.dumps({key_to_str(k): round(v, 5) for k, v in p.prediction.probs.items()}),
                   int(p.prediction.low_data_home), int(p.prediction.low_data_away), int(p.prediction.new_home),
-                  int(p.prediction.new_away), int(p.prediction.cross_league), p.home_matches, p.away_matches)
+                  int(p.prediction.new_away), int(p.prediction.cross_league), p.home_matches, p.away_matches,
+                  p.prediction.method)
                  for p in preds],
             )
 

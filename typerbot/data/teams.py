@@ -3,7 +3,7 @@
 Kolejność prób dla nowej nazwy:
   1. dokładny alias z tego samego źródła (także z innej ligi),
   2. zgodność po normalizacji z aliasem z innego źródła,
-  3. znana grupa wariantów (team_seeds),
+  3. znana grupa wariantów (team_seeds i warianty nazw klubów z openfootball/clubs),
   4. dopasowanie przybliżone (rapidfuzz) z progami pewności,
   5. nowa drużyna.
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from rapidfuzz import fuzz
@@ -37,11 +37,12 @@ _SPECIAL = str.maketrans({
     "đ": "d", "Đ": "D", "ı": "i", "œ": "oe", "Œ": "OE",
 })
 
+# Nazwa drużyny wyświetlana w aplikacji – ze źródła o najwyższym priorytecie (pełne nazwy klubów).
 SOURCE_PRIORITY = {
     "manual": 5,
-    "the_odds_api": 3,
-    "oddspapi": 3,
-    "football_data_org": 2,
+    "openligadb": 3,
+    "openfootball": 3,
+    "international": 2,
     "football_data_csv": 1,
 }
 
@@ -89,6 +90,7 @@ class _Candidate:
     names: set[str]           # znormalizowane aliasy
     groups: set[int]          # grupy z team_seeds
     sources: set[str]         # źródła mające już alias w tej lidze
+    clubs: set[str] = field(default_factory=set)   # kluby z openfootball/clubs (nazwa główna)
 
 
 class TeamMatcher:
@@ -102,9 +104,22 @@ class TeamMatcher:
     def __init__(self, db: Database):
         self.db = db
         self._cache: dict[tuple[str, str, str], int] = {}
+        self._clubs: dict[str, dict[str, str]] = {}     # kraj -> {wariant znormalizowany: nazwa główna}
 
     def clear_cache(self) -> None:
         self._cache.clear()
+        self._clubs.clear()
+
+    def _club(self, conn: sqlite3.Connection, country: str, name: str) -> str | None:
+        """Klub z listy openfootball/clubs, do którego należy nazwa (w danym kraju)."""
+        if not country:
+            return None
+        index = self._clubs.get(country)
+        if index is None:
+            index = {r["variant"]: r["canonical"] for r in conn.execute(
+                "SELECT variant, canonical FROM club_names WHERE country = ?", (country,))}
+            self._clubs[country] = index
+        return index.get(normalize(name))
 
     # -- główne API -----------------------------------------------------------
     def resolve(
@@ -140,19 +155,20 @@ class TeamMatcher:
         names = [name, *[h for h in hints if h]]
         norms = [normalize(n) for n in names]
         groups = {g for g in (seed_group(n) for n in names) if g is not None}
-        candidates = [c for c in self._candidates(conn, league_code, is_cup) if source not in c.sources]
+        clubs = {c for c in (self._club(conn, country, n) for n in names) if c}
+        candidates = [c for c in self._candidates(conn, league_code, is_cup, country) if source not in c.sources]
 
         for cand in candidates:
             if any(n in cand.names for n in norms):
                 return self._link(conn, source, league_code, name, Resolution(cand.team_id, "normalized", 100.0))
-        if groups:
-            for cand in candidates:
-                if groups & cand.groups:
-                    return self._link(conn, source, league_code, name, Resolution(cand.team_id, "seed", 100.0))
+        for cand in candidates:
+            if (groups & cand.groups) or (clubs & cand.clubs):
+                return self._link(conn, source, league_code, name, Resolution(cand.team_id, "seed", 100.0))
 
         scored: list[tuple[float, int]] = []
         for cand in candidates:
-            if groups and cand.groups and not (groups & cand.groups):
+            if (groups and cand.groups and not (groups & cand.groups)) or (
+                    clubs and cand.clubs and not (clubs & cand.clubs)):
                 continue  # obie nazwy znane i należą do różnych klubów
             best = max((similarity(n, c) for n in norms for c in cand.names), default=0.0)
             scored.append((best, cand.team_id))
@@ -200,7 +216,8 @@ class TeamMatcher:
         )
 
     # -- pomocnicze -------------------------------------------------------------
-    def _candidates(self, conn: sqlite3.Connection, league_code: str, is_cup: bool) -> list[_Candidate]:
+    def _candidates(self, conn: sqlite3.Connection, league_code: str, is_cup: bool,
+                    country: str = "") -> list[_Candidate]:
         if is_cup:
             rows = conn.execute("SELECT team_id, source, name, league_code FROM team_aliases").fetchall()
         else:
@@ -215,6 +232,9 @@ class TeamMatcher:
             group = seed_group(r["name"])
             if group is not None:
                 cand.groups.add(group)
+            club = self._club(conn, country, r["name"])
+            if club:
+                cand.clubs.add(club)
             if r["league_code"] == league_code:
                 cand.sources.add(r["source"])
         return list(by_team.values())

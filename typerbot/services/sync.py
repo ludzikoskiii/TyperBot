@@ -1,64 +1,59 @@
-"""Synchronizacja danych – wyłącznie darmowe źródła.
+"""Synchronizacja danych – wyłącznie źródła bez klucza, rejestracji i limitu miesięcznego.
 
-Każdy krok (liga × źródło) jest uruchamiany osobno: błąd jednego źródła trafia
-do raportu i statusu źródła, ale nie przerywa pozostałych kroków.
+Każdy krok (liga × źródło) jest uruchamiany osobno: błąd jednego źródła trafia do raportu
+i statusu źródła, ale nie przerywa pozostałych kroków. Wszystko, co pobrane, zostaje w bazie –
+bez internetu aplikacja działa na ostatnich danych (data ostatniej udanej aktualizacji każdego
+źródła jest zapisywana i pokazywana w interfejsie).
 Serwis jest niezależny od Qt – w interfejsie uruchamiamy go w wątku w tle.
 
-Role źródeł (wszystkie bez opłat i bez karty):
-  * football-data.co.uk (bez klucza i limitu) – główne źródło: historia wyników i kursów
-    (model, backtest) oraz nadchodzące mecze z kursami 1X2 i powyżej/poniżej 2,5;
-  * football-data.org (darmowy klucz, 10 zapytań/min) – terminarz i wyniki lig top-5
-    i Ligi Mistrzów (szybkie wyniki do rozliczania kuponów);
-  * The Odds API (darmowy klucz, 500 kredytów/mies.) – bezpłatna lista meczów lig spoza
-    football-data.org oraz uzupełnienie brakujących kursów 1X2 i powyżej/poniżej 2,5;
-  * OddsPapi (darmowy klucz, 250 zapytań/mies.) – uzupełnienie brakujących kursów
-    (BTTS, podwójna szansa, kursy Superbet), do 5 lig w jednym zapytaniu.
-
-Źródła z limitem są tylko uzupełnieniem. Pytamy je wyłącznie o ligi, w których w najbliższych
-dniach brakuje kursów, najwyżej raz dziennie na ligę i w ramach budżetu dziennego
-(pozostały budżet miesięczny aplikacji / pozostałe dni miesiąca). Budżet aplikacji jest
-niższy od limitu planu, więc limit nie wyczerpie się przed końcem miesiąca.
+Role źródeł:
+  * football-data.co.uk – główne: nadchodzące mecze z kursami (piątek: weekend, wtorek: środek
+    tygodnia), wyniki i historia z kursami dla 38 lig w 27 krajach;
+  * openfootball – terminarz całego sezonu z wyprzedzeniem i wyniki (mecze, dla których
+    football-data.co.uk nie opublikował jeszcze pliku, np. w poniedziałek na środę);
+  * OpenLigaDB – ligi niemieckie (Bundesliga 1–3, Puchar Niemiec) na bieżąco;
+  * international_results – wyniki reprezentacji (ranking Elo);
+  * openfootball/clubs – warianty nazw klubów (ujednolicanie nazw między źródłami).
 """
 
 from __future__ import annotations
 
-import calendar
 import json
 import logging
-import math
 import threading
 import time
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
-from typerbot.config.leagues import League, season_of
+from typerbot.config.leagues import FDCUK_EXTRA_COUNTRIES, League, season_of
 from typerbot.config.secrets import REMOVED_SOURCES, SecretStore
 from typerbot.config.settings import Settings, SettingsStore
 from typerbot.data.db import Database
-from typerbot.data.errors import STATE_LABELS, SourceError
+from typerbot.data.errors import SourceError
 from typerbot.data.http import HttpClient, Transport
-from typerbot.data.quota import QuotaInfo, QuotaTracker, StatusBoard, period_start
+from typerbot.data.quota import QuotaTracker, SourceState, StatusBoard
 from typerbot.data.ratelimit import RateLimiter
-from typerbot.data.records import LIVE, MARKET_1X2, MARKET_OU, SCHEDULED, MatchRecord, to_iso
+from typerbot.data.records import SCHEDULED, MatchRecord
 from typerbot.data.repository import LeagueRepository, MatchRepository
-from typerbot.data.sources import ApiSource, FootballDataCsv, FootballDataOrg, OddsPapi, TheOddsApi
-from typerbot.data.sources.the_odds_api import MARKET_KEYS
+from typerbot.data.sources import (
+    SOURCE_ROLES, ApiSource, ClubNames, FootballDataCsv, InternationalResults, OpenFootball, OpenLigaDb,
+)
+from typerbot.data.sources.club_names import CLUB_FILES
+from typerbot.data.teams import normalize
 
 log = logging.getLogger(__name__)
 
 HOUR = 3600.0
 DAY = 24 * HOUR
-CURRENT_SEASON_REFRESH = 12 * HOUR     # plik bieżącego sezonu (wyniki) – co 12 godzin
-FIXTURE_FILES_TTL = 6 * HOUR           # pliki z nadchodzącymi meczami football-data.co.uk
-EVENTS_TTL = 6 * HOUR                  # bezpłatna lista meczów The Odds API
-SUPPLEMENT_TTL = 20 * HOUR             # kursy z uzupełnień (i tak najwyżej raz dziennie)
-PAPI_FIXTURES_DAYS = 3                 # terminarz OddsPapi – najwyżej raz na 3 dni na ligę
-RESULTS_LOOKBACK = timedelta(days=3)
-_SEVERITY = {"ok": 0, "skipped": 0, "offline": 2, "plan": 3, "error": 4, "quota": 5, "no_key": 6, "auth": 7}
-# Rynki, których kursy daje football-data.co.uk (reszta – z uzupełnień albo szacowana).
-CSV_MARKETS = {"main": {MARKET_1X2, MARKET_OU}, "extra": {MARKET_1X2}}
+CURRENT_SEASON_REFRESH = 12 * HOUR     # plik bieżącego sezonu z wynikami – co 12 godzin
+MISSING_FILE_RETRY = DAY               # brak pliku sezonu w źródle – ponowna próba po dobie
+CLUB_NAMES_REFRESH = 30 * DAY          # warianty nazw klubów zmieniają się rzadko
+INTERNATIONAL_TTL = 3 * DAY            # zbiór wyników reprezentacji aktualizowany ok. raz w miesiącu
+INTERNATIONAL_SINCE_YEARS = 12         # historia reprezentacji do rankingu Elo
+EXTRA_HISTORY_SEASONS = 3              # historia lig spoza football-data.co.uk (openfootball, OpenLigaDB)
+_SEVERITY = {"ok": 0, "skipped": 0, "offline": 2, "error": 4}
 
 
 @dataclass
@@ -121,64 +116,23 @@ def load_last_report(db: Database) -> SyncReport | None:
 
 
 @dataclass
-class QuotaRow:
+class SourceRow:
+    """Stan źródła do wyświetlenia: czy włączone, stan, data ostatniej udanej aktualizacji."""
     source: str
     label: str
-    period: str
-    used: int | None
-    limit: int | None
-    remaining: int | None
-    from_headers: bool
-    calls_today: int
+    role: str
+    enabled: bool
     state: str
     message: str
-
-
-@dataclass
-class Budget:
-    """Budżet źródła z limitem miesięcznym: miesięczny limit aplikacji rozłożony równo na dni."""
-    source: str
-    plan_limit: int
-    app_limit: int
-    used_month: int      # zużyte w tym miesiącu (z nagłówków odpowiedzi albo policzone lokalnie)
-    used_today: int
-    days_left: int       # łącznie z dzisiejszym
-
-    @property
-    def month_left(self) -> int:
-        return max(0, min(self.app_limit, self.plan_limit) - self.used_month)
-
-    @property
-    def daily_allowance(self) -> int:
-        at_day_start = max(0, min(self.app_limit, self.plan_limit) - (self.used_month - self.used_today))
-        return math.ceil(at_day_start / max(1, self.days_left))
-
-    @property
-    def today_left(self) -> int:
-        return max(0, min(self.daily_allowance - self.used_today, self.month_left))
-
-    def allows(self, cost: int) -> bool:
-        return cost <= self.today_left
-
-
-@dataclass
-class UsageEstimate:
-    source: str
-    label: str
-    plan_limit: int
-    app_limit: int
-    used_month: int
-    used_today: int
-    daily_allowance: int
-    projected: int        # szacunek na cały miesiąc (zużyte + prognoza według terminarza i reguł)
-    rule: str
+    last_ok: float | None
+    calls_today: int
 
 
 class SyncService:
     def __init__(
         self,
         db: Database,
-        secrets: SecretStore,
+        secrets: SecretStore | None = None,
         *,
         transport: Transport | None = None,
         clock: Callable[[], float] = time.time,
@@ -196,12 +150,13 @@ class SyncService:
         self.leagues = LeagueRepository(db)
         self.leagues.ensure_defaults()
         self.matches = MatchRepository(db)
-        self.csv = FootballDataCsv(self.http, self.quota, None, clock=clock)
-        self.fd_org = FootballDataOrg(self.http, self.quota, secrets, clock=clock)
-        self.odds_api = TheOddsApi(self.http, self.quota, secrets, clock=clock)
-        self.oddspapi = OddsPapi(self.http, self.quota, secrets, clock=clock)
+        self.csv = FootballDataCsv(self.http, self.quota, clock=clock)
+        self.openfootball = OpenFootball(self.http, self.quota, clock=clock)
+        self.openligadb = OpenLigaDb(self.http, self.quota, clock=clock)
+        self.international = InternationalResults(self.http, self.quota, clock=clock)
+        self.club_names = ClubNames(self.http, self.quota, clock=clock)
         self.sources: dict[str, ApiSource] = {
-            s.name: s for s in (self.csv, self.fd_org, self.odds_api, self.oddspapi)
+            s.name: s for s in (self.csv, self.openfootball, self.openligadb, self.international, self.club_names)
         }
         if not rate_limits:  # transport lokalny (demo, testy) – bez czekania między zapytaniami
             for src in self.sources.values():
@@ -230,20 +185,28 @@ class SyncService:
                          "value = excluded.value", (f"meta.{key}", json.dumps(value)))
 
     def _forget_removed_keys(self) -> None:
-        """Klucze usuniętych źródeł (np. API-Football) kasujemy z magazynu poświadczeń."""
+        """Klucze usuniętych źródeł kasujemy (raz) z magazynu poświadczeń – aplikacja nie używa kluczy."""
+        if self.secrets is None or self.meta("removed_keys_cleared"):
+            return
         for name in REMOVED_SOURCES:
             try:
                 if self.secrets.get(name):
                     self.secrets.delete(name)
-            except Exception:  # magazyn niedostępny – nic nie szkodzi
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException:  # magazyn niedostępny lub uszkodzony backend – nic nie szkodzi
                 log.debug("Nie udało się usunąć klucza %s", name, exc_info=True)
+                return
+        self.set_meta("removed_keys_cleared", True)
+
+    def enabled_sources(self, settings: Settings | None = None) -> dict[str, bool]:
+        sync = (settings or self.settings()).sync
+        return {self.csv.name: True, self.openfootball.name: sync.openfootball, self.openligadb.name: sync.openligadb,
+                self.international.name: sync.international, self.club_names.name: True}
 
     def _step(self, report: SyncReport, source: ApiSource, step: str, league: League | None,
               fn: Callable[[], int], detail: str = "") -> int | None:
         code = league.code if league else None
-        if not source.has_key():
-            report.add(StepResult(source.name, step, code, "no_key", STATE_LABELS["no_key"]))
-            return None
         try:
             count = fn()
         except SourceError as exc:
@@ -292,18 +255,22 @@ class SyncService:
             for src in self.sources.values():
                 src.force_refresh = False
 
-    def _history_fresh(self, source: str, code: str, season: int, past: bool) -> bool:
-        row = self.db.query_one(
-            "SELECT fetched_at, complete FROM history_files WHERE source = ? AND league_code = ? AND season = ?",
-            (source, code, season),
-        )
+    def _file_row(self, source: str, code: str, season: int):
+        return self.db.query_one(
+            "SELECT fetched_at, complete, rows FROM history_files WHERE source = ? AND league_code = ? AND season = ?",
+            (source, code, season))
+
+    def _file_fresh(self, source: str, code: str, season: int, refresh: float) -> bool:
+        """Plik zakończonego sezonu pobieramy raz; bieżący – co `refresh` sekund; brakujący – raz na dobę."""
+        row = self._file_row(source, code, season)
         if row is None:
             return False
-        if past:
-            return bool(row["complete"])
-        return self.clock() - row["fetched_at"] < CURRENT_SEASON_REFRESH
+        if row["complete"]:
+            return True
+        age = self.clock() - row["fetched_at"]
+        return age < (MISSING_FILE_RETRY if row["rows"] < 0 else refresh)
 
-    def _mark_history(self, source: str, code: str, season: int, rows: int, complete: bool) -> None:
+    def _mark_file(self, source: str, code: str, season: int, rows: int, complete: bool) -> None:
         with self.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO history_files(source, league_code, season, fetched_at, rows, complete) "
@@ -312,385 +279,257 @@ class SyncService:
                 (source, code, season, self.clock(), rows, int(complete)),
             )
 
-    def _today(self) -> str:
-        return datetime.fromtimestamp(self.clock(), tz=timezone.utc).date().isoformat()
+    def _seasons(self, league: League, count: int) -> list[int]:
+        """Sezony od bieżącego wstecz (bieżący pierwszy – aplikacja szybciej ma aktualne dane)."""
+        current = league.season_at(self.now())
+        return list(range(current, current - count, -1))
 
-    def _done_today(self, what: str, code: str) -> bool:
-        return self.meta(f"daily.{what}.{code}") == self._today()
+    # -- nazwy klubów -------------------------------------------------------------------
+    def sync_club_names(self, report: SyncReport) -> None:
+        """Warianty nazw klubów (openfootball/clubs) dla krajów z aktywnymi ligami – raz na 30 dni."""
+        countries = sorted({lg.country for lg in self.leagues.all(enabled_only=True)} & set(CLUB_FILES))
+        for country in countries:
+            last = self.meta(f"club_names.{country}", 0)
+            if last > self.clock() - CLUB_NAMES_REFRESH and not self.club_names.force_refresh:
+                continue
+            count = self._step(report, self.club_names, "names", None,
+                               lambda c=country: self._save_club_names(c), detail=country)
+            if count is not None:
+                self.set_meta(f"club_names.{country}", self.clock())
 
-    def _mark_today(self, what: str, code: str) -> None:
-        self.set_meta(f"daily.{what}.{code}", self._today())
+    def _save_club_names(self, country: str) -> int:
+        clubs = self.club_names.country(country, ttl=CLUB_NAMES_REFRESH)
+        if not clubs:
+            return 0
+        variants: dict[str, str | None] = {}
+        for canonical, names in clubs:
+            for name in (canonical, *names):
+                key = normalize(name)
+                if not key:
+                    continue
+                if key in variants and variants[key] != canonical:
+                    variants[key] = None           # ten sam wariant dla dwóch klubów – niejednoznaczny
+                else:
+                    variants.setdefault(key, canonical)
+        rows = [(country, k, v) for k, v in variants.items() if v]
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM club_names WHERE country = ?", (country,))
+            conn.executemany("INSERT INTO club_names(country, variant, canonical) VALUES (?, ?, ?)", rows)
+        self.matches.matcher.clear_cache()
+        return len(rows)
 
     # -- historia --------------------------------------------------------------------
     def sync_history(self, report: SyncReport) -> None:
-        """Wyniki i kursy z football-data.co.uk: zakończone sezony raz na zawsze, bieżący co 12 h."""
-        leagues = self.leagues.all(enabled_only=True)
-        current = self.current_season()
-        seasons = list(range(current - self.settings().sync.csv_seasons + 1, current + 1))
-        for league in leagues:
-            if league.fdcuk_format == "main":
-                for season in seasons:
-                    if self._history_fresh(self.csv.name, league.code, season, season < current):
-                        continue
-                    self._step(report, self.csv, "history", league,
-                               lambda lg=league, s=season: self._csv_main(lg, s, s < current),
-                               detail=f"sezon {season}/{(season + 1) % 100:02d}")
-            elif league.fdcuk_format == "extra" and not self._history_fresh(self.csv.name, league.code, 0, False):
-                self._step(report, self.csv, "history", league, lambda lg=league: self._csv_extra(lg, set(seasons)))
-
-    def _csv_main(self, league: League, season: int, past: bool) -> int:
-        try:
-            records = self.csv.season(league, season, ttl=0)
-        except SourceError as exc:
-            if "404" not in exc.message:
-                raise
-            if past:   # brak pliku zakończonego sezonu (liga nieobjęta w tym sezonie) – nie pytamy ponownie
-                self._mark_history(self.csv.name, league.code, season, 0, complete=True)
-            return 0   # plik bieżącego sezonu jeszcze nie istnieje
-        count = self._save(records)
-        self._mark_history(self.csv.name, league.code, season, count, complete=past)
-        return count
-
-    def _csv_extra(self, league: League, seasons: set[int]) -> int:
-        count = self._save(self.csv.extra(league, seasons, ttl=0))
-        self._mark_history(self.csv.name, league.code, 0, count, complete=False)
-        return count
-
-    # -- terminarz i wyniki -------------------------------------------------------------
-    def sync_fixtures(self, report: SyncReport) -> None:
-        """Nadchodzące mecze: football-data.co.uk (z kursami), football-data.org (terminarz i wyniki),
-        a dla lig bez tych źródeł – bezpłatna lista meczów The Odds API."""
+        """Wyniki (z kursami) do modelu, rankingu Elo i backtestu. Zakończone sezony pobieramy raz na zawsze,
+        bieżący co 12 godzin. Najpierw bieżące sezony wszystkich lig, potem starsze."""
         settings = self.settings()
+        use = self.enabled_sources(settings)
         leagues = self.leagues.all(enabled_only=True)
-        now = self.now()
-        main = [lg for lg in leagues if lg.fdcuk_format == "main"]
-        extra = [lg for lg in leagues if lg.fdcuk_format == "extra"]
-        if main:
-            self._step(report, self.csv, "fixtures", None,
-                       lambda: self._save(self.csv.upcoming_main(main, now, ttl=FIXTURE_FILES_TTL)),
-                       detail="fixtures.csv: " + ", ".join(lg.code for lg in main))
-        if extra:
-            self._step(report, self.csv, "fixtures", None,
-                       lambda: self._save(self.csv.upcoming_extra(extra, now, ttl=FIXTURE_FILES_TTL)),
-                       detail="new_league_fixtures.csv: " + ", ".join(lg.code for lg in extra))
-
-        fd_ok: set[str] = set()
-        if not self.fd_org.has_key() and any(lg.fd_org_code for lg in leagues):
-            report.add(StepResult(self.fd_org.name, "fixtures", None, "no_key",
-                                  "brak klucza – terminarz i szybkie wyniki tych lig tylko z innych źródeł"))
-        season = self.current_season()
-        ttl = settings.sync.fixtures_every_hours * HOUR
+        n_csv = max(1, settings.sync.csv_seasons)
+        plan: list[tuple[int, Callable[[], None]]] = []
         for league in leagues:
-            if league.fd_org_code and self.fd_org.has_key():
-                done = self._step(report, self.fd_org, "fixtures", league,
-                                  lambda lg=league: self._save(self.fd_org.season_matches(lg, season, ttl=ttl)))
-                if done is not None:
-                    fd_ok.add(league.code)
+            if league.fdcuk_format == "main" and league.fdcuk_code:
+                for i, season in enumerate(self._seasons(league, n_csv)):
+                    plan.append((i, lambda lg=league, s=season, past=i > 0: self._csv_main(report, lg, s, past)))
+            elif league.fdcuk_format == "extra" and league.fdcuk_code:
+                plan.append((0, lambda lg=league: self._csv_extra(report, lg, n_csv)))
+            else:     # ligi spoza football-data.co.uk – historia z openfootball albo OpenLigaDB
+                for i, season in enumerate(self._seasons(league, EXTRA_HISTORY_SEASONS)):
+                    if league.openligadb and use[self.openligadb.name]:
+                        plan.append((i, lambda lg=league, s=season, past=i > 0: self._season_file(
+                            report, self.openligadb, lg, s, past)))
+                    elif league.openfootball and use[self.openfootball.name]:
+                        plan.append((i, lambda lg=league, s=season, past=i > 0: self._season_file(
+                            report, self.openfootball, lg, s, past)))
+        for _, fn in sorted(plan, key=lambda x: x[0]):
+            fn()
+        if use[self.international.name] and any(lg.national for lg in leagues):
+            self._international(report)
 
-        # Ligi bez terminarza z football-data.org (np. Ekstraklasa) – bezpłatna lista meczów The Odds API.
-        if self.odds_api.has_key() and not self._events_cost_credits():
-            for league in leagues:
-                if league.code in fd_ok or not league.odds_api_key:
-                    continue
-                self._step(report, self.odds_api, "fixtures", league,
-                           lambda lg=league: self._save(self.odds_api.events(lg, ttl=EVENTS_TTL)),
-                           detail="lista meczów (bezpłatna)")
+    def _csv_main(self, report: SyncReport, league: League, season: int, past: bool) -> None:
+        if self._file_fresh(self.csv.name, league.code, season, CURRENT_SEASON_REFRESH):
+            return
 
-    def _events_cost_credits(self) -> bool:
-        """Zabezpieczenie: gdyby lista meczów zaczęła kosztować kredyty, przestajemy z niej korzystać."""
-        row = self.db.query_one(
-            "SELECT COUNT(*) AS n FROM api_calls WHERE source = ? AND endpoint LIKE '%/events' AND cost > 0 "
-            "AND ts >= ?", (self.odds_api.name, period_start("month", self.clock())))
-        return bool(row and row["n"])
+        def fetch() -> int:
+            try:
+                records = self.csv.season(league, season, ttl=0)
+            except SourceError as exc:
+                if "404" not in exc.message:
+                    raise
+                # brak pliku: zakończony sezon (liga nieobjęta) – nie pytamy ponownie; bieżący – jeszcze nie ma
+                self._mark_file(self.csv.name, league.code, season, -1, complete=past)
+                return 0
+            count = self._save(records)
+            self._mark_file(self.csv.name, league.code, season, count, complete=past)
+            return count
 
-    def sync_missing_results(self, report: SyncReport) -> None:
-        """Wyniki meczów z kuponów w grze, których nie mają jeszcze źródła bez limitu (np. Ekstraklasa
-        przed aktualizacją pliku CSV) – The Odds API (2 kredyty za ligę), najwyżej raz dziennie."""
-        now = self.now()
+        self._step(report, self.csv, "history", league, fetch, detail=f"sezon {league.season_label(season)}")
+
+    def _csv_extra(self, report: SyncReport, league: League, n_seasons: int) -> None:
+        if self._file_fresh(self.csv.name, league.code, 0, CURRENT_SEASON_REFRESH):
+            return
+        current = league.season_at(self.now())
+        seasons = set(range(current - n_seasons + 1, current + 1))
+
+        def fetch() -> int:
+            count = self._save(self.csv.extra(league, seasons, ttl=0))
+            self._mark_file(self.csv.name, league.code, 0, count, complete=False)
+            return count
+
+        self._step(report, self.csv, "history", league, fetch)
+
+    def _season_file(self, report: SyncReport, source: ApiSource, league: League, season: int, past: bool,
+                     refresh: float = CURRENT_SEASON_REFRESH, step: str = "history") -> None:
+        """Plik sezonu z openfootball albo OpenLigaDB (terminarz i wyniki)."""
+        if self._file_fresh(source.name, league.code, season, refresh):
+            return
+
+        def fetch() -> int:
+            try:
+                records = source.season(league, season, ttl=0)
+            except SourceError as exc:
+                if "404" not in exc.message:
+                    raise
+                self._mark_file(source.name, league.code, season, -1, complete=False)
+                return 0
+            count = self._save(records)
+            if source is self.openfootball:
+                self._prune_stale(source.name, league.code, season, {r.external_id for r in records})
+            finished = past and records and all(r.status != SCHEDULED for r in records)
+            self._mark_file(source.name, league.code, season, count, complete=bool(finished))
+            return count
+
+        self._step(report, source, step, league, fetch, detail=f"sezon {league.season_label(season)}")
+
+    def _prune_stale(self, source: str, league: str, season: int, current_ids: set[str]) -> None:
+        """Mecze usunięte z terminarza źródła (np. przełożone na nową kolejkę): powiązanie ze źródłem znika,
+        a mecz znany tylko z tego źródła – z bazy (inaczej wisiałby jako nierozegrany)."""
+        prefix = f"{league}:{season}:"
         rows = self.db.query(
-            "SELECT DISTINCT m.id, m.league_code FROM coupon_legs l JOIN matches m ON m.id = l.match_id "
-            "WHERE l.result = 'pending' AND m.status IN (?, ?) AND m.kickoff < ? AND m.kickoff >= ?",
-            (SCHEDULED, LIVE, to_iso(now - timedelta(hours=3)), to_iso(now - RESULTS_LOOKBACK)))
-        waiting = sorted({r["league_code"] for r in rows})
-        if not waiting or not self.odds_api.has_key():
+            "SELECT s.external_id, s.match_id FROM match_sources s JOIN matches m ON m.id = s.match_id "
+            "WHERE s.source = ? AND s.external_id LIKE ? AND m.status = ?", (source, prefix + "%", SCHEDULED))
+        stale = [r for r in rows if r["external_id"] not in current_ids]
+        if not stale:
             return
-        budget = self.budget(self.odds_api)
-        for code in waiting:
-            league = self.leagues.get(code)
-            if league is None or not league.odds_api_key:
-                continue
-            if self._done_today("results", code):
-                self._skip(report, self.odds_api, "results", league, "wyniki pobrane już dziś")
-                continue
-            if not budget.allows(2):
-                self._skip(report, self.odds_api, "results", league,
-                           f"dzienny budżet kredytów wykorzystany ({budget.daily_allowance}/dzień)")
-                continue
-            self._step(report, self.odds_api, "results", league,
-                       lambda lg=league: self._save(self.odds_api.scores(lg, 3, ttl=12 * HOUR)))
-            if report.steps[-1].state != "offline":
-                self._mark_today("results", code)
-            budget = self.budget(self.odds_api)
+        with self.matches.write_lock, self.db.transaction() as conn:
+            for r in stale:
+                conn.execute("DELETE FROM match_sources WHERE source = ? AND external_id = ?",
+                             (source, r["external_id"]))
+                others = conn.execute("SELECT COUNT(*) FROM match_sources WHERE match_id = ?",
+                                      (r["match_id"],)).fetchone()[0]
+                used = conn.execute("SELECT COUNT(*) FROM coupon_legs WHERE match_id = ?",
+                                    (r["match_id"],)).fetchone()[0]
+                if not others and not used:
+                    conn.execute("DELETE FROM matches WHERE id = ?", (r["match_id"],))
 
-    # -- brakujące kursy ----------------------------------------------------------------
-    def odds_gaps(self, start: datetime, end: datetime, markets: Iterable[str] | None = None
-                  ) -> dict[str, dict[str, list[int]]]:
-        """{liga: {rynek: [mecze bez kursu]}} dla nadchodzących meczów w zakresie."""
-        wanted = list(markets if markets is not None else self.settings().markets_enabled)
-        leagues = [lg.code for lg in self.leagues.all(enabled_only=True)]
-        rows = self.matches.matches_between(start, end, leagues=leagues, statuses=[SCHEDULED])
-        if not rows:
-            return {}
-        ids = [r["id"] for r in rows]
-        present: dict[int, set[str]] = {}
-        for r in self.db.query(
-                f"SELECT DISTINCT match_id, market FROM odds WHERE kind = 'pre' AND (market != 'OU' OR line = 2.5) "
-                f"AND match_id IN ({','.join('?' * len(ids))})", tuple(ids)):
-            present.setdefault(r["match_id"], set()).add(r["market"])
-        gaps: dict[str, dict[str, list[int]]] = {}
-        for r in rows:
-            have = present.get(r["id"], set())
-            for market in wanted:
-                if market not in have:
-                    gaps.setdefault(r["league_code"], {}).setdefault(market, []).append(r["id"])
-        return gaps
+    def _international(self, report: SyncReport) -> None:
+        if self._file_fresh(self.international.name, "INT", 0, INTERNATIONAL_TTL):
+            return
+        since = date(self.now().year - INTERNATIONAL_SINCE_YEARS, 1, 1)
 
-    def sync_missing_odds(self, report: SyncReport) -> None:
-        """Uzupełnienie kursów, których nie ma w plikach football-data.co.uk: najpierw OddsPapi
-        (do 5 lig w jednym zapytaniu, wszystkie rynki), potem The Odds API (tylko 1X2 i powyżej/poniżej)."""
+        def fetch() -> int:
+            count = self._save(self.international.results(since, ttl=0))
+            self._mark_file(self.international.name, "INT", 0, count, complete=False)
+            return count
+
+        self._step(report, self.international, "history", self.leagues.get("INT"), fetch)
+
+    # -- terminarz -------------------------------------------------------------------------
+    def sync_fixtures(self, report: SyncReport) -> None:
+        """Nadchodzące mecze: football-data.co.uk (z kursami), openfootball (terminarz z wyprzedzeniem),
+        OpenLigaDB (ligi niemieckie). Ligi nowe w plikach football-data.co.uk dopisujemy automatycznie."""
         settings = self.settings()
-        start = self.now()
-        end = start + timedelta(days=max(1, settings.sync.odds_horizon_days))
-        leagues = {lg.code: lg for lg in self.leagues.all(enabled_only=True)}
-        gaps = self.odds_gaps(start, end, settings.markets_enabled)
-        if not gaps:
-            return
-
-        if self.oddspapi.has_key() and settings.odds.bookmaker:
-            todo = [leagues[c] for c in gaps if c in leagues and leagues[c].oddspapi_id]
-            fresh = [lg for lg in todo if not self._done_today("oddspapi", lg.code)]
-            for lg in todo:
-                if lg not in fresh:
-                    self._skip(report, self.oddspapi, "odds", lg, "uzupełnione już dziś")
-            for i in range(0, len(fresh), 5):
-                chunk = fresh[i:i + 5]
-                budget = self.budget(self.oddspapi)
-                if not budget.allows(1):
-                    for lg in chunk:
-                        self._skip(report, self.oddspapi, "odds", lg,
-                                   f"dzienny budżet zapytań wykorzystany ({budget.daily_allowance}/dzień)")
-                    continue
-                self._step(report, self.oddspapi, "odds", None,
-                           lambda ch=chunk: self._papi_odds(ch, settings, start, end),
-                           detail="brakujące kursy: " + ", ".join(lg.code for lg in chunk))
-                if report.steps[-1].state != "offline":     # bez połączenia – spróbujemy przy kolejnym odświeżeniu
-                    for lg in chunk:
-                        self._mark_today("oddspapi", lg.code)
-            gaps = self.odds_gaps(start, end, settings.markets_enabled)
-
-        if not self.odds_api.has_key():
-            return
-        active = self._active_odds_sports()
-        region = settings.odds.region
-        order = sorted(gaps, key=lambda c: -sum(len(v) for v in gaps[c].values()))
-        for code in order:
-            league = leagues.get(code)
-            need = [MARKET_KEYS[m] for m in (MARKET_1X2, MARKET_OU) if gaps[code].get(m)]
-            if league is None or not league.odds_api_key or not need:
-                continue
-            if active is not None and league.odds_api_key not in active:
-                self._skip(report, self.odds_api, "odds", league, "poza sezonem")
-                continue
-            if self._done_today("odds_api", code):
-                self._skip(report, self.odds_api, "odds", league, "uzupełnione już dziś")
-                continue
-            cost = len(need) * len(region.split(","))
-            budget = self.budget(self.odds_api)
-            if not budget.allows(cost):
-                self._skip(report, self.odds_api, "odds", league,
-                           f"dzienny budżet kredytów wykorzystany ({budget.daily_allowance}/dzień)")
-                continue
-            missing = sum(len(gaps[code].get(m, [])) for m in (MARKET_1X2, MARKET_OU))
-            self._step(report, self.odds_api, "odds", league,
-                       lambda lg=league, mk=tuple(need): self._save(
-                           self.odds_api.odds(lg, region=region, ttl=SUPPLEMENT_TTL, markets=mk)),
-                       detail=f"brakujące kursy ({missing}): {', '.join(need)}")
-            if report.steps[-1].state != "offline":
-                self._mark_today("odds_api", code)
-
-    def _papi_odds(self, leagues: list[League], settings: Settings, start: datetime, end: datetime) -> int:
-        self._verify_tournament_ids(leagues)
-        leagues = [self.leagues.get(lg.code) or lg for lg in leagues]
-        slug = self.meta("oddspapi_bookmaker_slug")
-        if slug is None or not str(slug).startswith(settings.odds.bookmaker.lower()):
-            slug = self.oddspapi.find_bookmaker(settings.odds.bookmaker)
-            self.set_meta("oddspapi_bookmaker_slug", slug)
-        odds, records = self.oddspapi.odds_by_tournaments(leagues, slug, ttl=SUPPLEMENT_TTL)
-        saved = self._save(records) if records else 0
-        if any(self._match_for_fixture(fid) is None for fid in odds):
-            # Mecze spoza znanych – terminarz ligi z OddsPapi, najwyżej raz na 3 dni (oszczędzamy limit).
-            for lg in leagues:
-                if self.meta(f"papi_fixtures.{lg.code}", 0) > self.clock() - PAPI_FIXTURES_DAYS * DAY:
-                    continue
-                if not self.budget(self.oddspapi).allows(1):
-                    break
-                self.set_meta(f"papi_fixtures.{lg.code}", self.clock())
-                self._save(self.oddspapi.fixtures(lg, start.date(), end.date() + timedelta(days=4),
-                                                  ttl=PAPI_FIXTURES_DAYS * DAY))
-        fetched = to_iso(self.now())
-        for fid, quotes in odds.items():
-            match_id = self._match_for_fixture(fid)
-            if match_id is None or not quotes:
-                continue
-            with self.matches.write_lock, self.db.transaction() as conn:
-                self.matches._save_odds(conn, match_id, self.oddspapi.name, quotes, fetched)
-            saved += 1
-        return saved
-
-    def _match_for_fixture(self, fixture_id: str) -> int | None:
-        row = self.db.query_one("SELECT match_id FROM match_sources WHERE source = ? AND external_id = ?",
-                                (self.oddspapi.name, fixture_id))
-        return int(row["match_id"]) if row else None
-
-    def _verify_tournament_ids(self, leagues: list[League]) -> None:
-        """Raz na 30 dni sprawdza identyfikatory lig w OddsPapi po nazwie kraju i ligi."""
-        if self.meta("oddspapi_tournaments_checked", 0) > self.clock() - 30 * DAY:
-            return
-        by_slug = {f"{t.get('categorySlug')}/{t.get('tournamentSlug')}": t.get("tournamentId")
-                   for t in self.oddspapi.tournaments()}
-        for lg in leagues:
-            tid = by_slug.get(lg.oddspapi_slug)
-            if tid and tid != lg.oddspapi_id:
-                log.info("OddsPapi: poprawiono identyfikator %s: %s -> %s", lg.code, lg.oddspapi_id, tid)
-                self.leagues.set_oddspapi_id(lg.code, int(tid))
-        self.set_meta("oddspapi_tournaments_checked", self.clock())
-
-    def _active_odds_sports(self) -> set[str] | None:
-        if not self.odds_api.has_key():
-            return None
-        try:
-            return {s.get("key") for s in self.odds_api.sports() if s.get("active", True)}
-        except SourceError:
-            return None
-
-    # -- budżety i szacunki ------------------------------------------------------------
-    def _app_limit(self, source: ApiSource) -> int:
-        sync = self.settings().sync
-        limits = {self.odds_api.name: sync.odds_api_monthly_budget, self.oddspapi.name: sync.oddspapi_monthly_budget}
-        return min(limits.get(source.name, source.quota_limit or 0), source.quota_limit or 0)
-
-    def budget(self, source: ApiSource) -> Budget:
-        info = self.quota.get(source.name, "month", source.quota_limit)
-        local = info.local_used
-        used = max(info.used or 0, local) if info.from_headers else local
-        today = self.db.query_one("SELECT COALESCE(SUM(cost), 0) AS n FROM api_calls WHERE source = ? AND ts >= ?",
-                                  (source.name, period_start("day", self.clock())))
-        now = datetime.fromtimestamp(self.clock(), tz=timezone.utc)
-        days_left = calendar.monthrange(now.year, now.month)[1] - now.day + 1
-        return Budget(source.name, source.quota_limit or 0, self._app_limit(source), used,
-                      int(today["n"]) if today else 0, days_left)
-
-    def usage_estimates(self) -> list[UsageEstimate]:
-        """Zużycie w tym miesiącu i szacunek na cały miesiąc według terminarza i reguł uzupełniania."""
-        settings = self.settings()
-        forecast = self._forecast(settings)
-        out = []
-        for src, rule in (
-            (self.odds_api, "raz dziennie na ligę, tylko brakujące kursy 1X2 i powyżej/poniżej 2,5 "
-                            "(np. Liga Mistrzów, powyżej/poniżej w Ekstraklasie); lista meczów bezpłatnie"),
-            (self.oddspapi, "raz dziennie, do 5 lig w jednym zapytaniu – brakujące BTTS, podwójna szansa, "
-                            "kursy Superbet"),
-        ):
-            b = self.budget(src)
-            projected = min(b.app_limit, b.used_month + forecast.get(src.name, 0))
-            out.append(UsageEstimate(src.name, src.label, b.plan_limit, b.app_limit, b.used_month, b.used_today,
-                                     b.daily_allowance, projected, rule))
-        return out
-
-    def _forecast(self, settings: Settings) -> dict[str, int]:
-        """Prognoza zapytań do końca miesiąca: dla każdego dnia ligi z meczami w horyzoncie i rynki,
-        których nie dają pliki football-data.co.uk. Ligi bez znanego terminarza liczymy jako aktywne."""
+        use = self.enabled_sources(settings)
         now = self.now()
-        horizon = timedelta(days=max(1, settings.sync.odds_horizon_days))
-        month_end = datetime(now.year, now.month, calendar.monthrange(now.year, now.month)[1], 23, 59,
-                             tzinfo=timezone.utc)
-        leagues = self.leagues.all(enabled_only=True)
-        wanted = set(settings.markets_enabled)
-        rows = self.matches.matches_between(now, month_end + horizon, leagues=[lg.code for lg in leagues],
-                                            statuses=[SCHEDULED])
-        kickoffs: dict[str, list[datetime]] = {}
-        for r in rows:
-            kickoffs.setdefault(r["league_code"], []).append(datetime.fromisoformat(r["kickoff"].replace("Z", "+00:00")))
-        odds_api = oddspapi = 0
-        day = now
-        first = True
-        while day <= month_end:
-            papi_leagues = 0
-            for lg in leagues:
-                ks = kickoffs.get(lg.code, [])
-                known_until = max(ks) if ks else None
-                active = any(day <= k <= day + horizon for k in ks) or known_until is None or day > known_until
-                if not active:
-                    continue
-                missing = wanted - CSV_MARKETS.get(lg.fdcuk_format or "", set())
-                done_api = first and self._done_today("odds_api", lg.code)
-                if lg.odds_api_key and self.odds_api.has_key() and not done_api:
-                    odds_api += len({MARKET_1X2, MARKET_OU} & missing)
-                if lg.oddspapi_id and missing and not (first and self._done_today("oddspapi", lg.code)):
-                    papi_leagues += 1
-            if self.oddspapi.has_key() and settings.odds.bookmaker:
-                oddspapi += math.ceil(papi_leagues / 5)
-            day += timedelta(days=1)
-            first = False
-        return {self.odds_api.name: odds_api, self.oddspapi.name: oddspapi}
+        ttl = max(0.5, settings.sync.fixtures_every_hours) * HOUR
+        leagues = self.leagues.all()
+        by_main = {lg.fdcuk_code: lg for lg in leagues if lg.fdcuk_format == "main" and lg.fdcuk_code}
+        by_extra = {lg.fdcuk_code: lg for lg in leagues if lg.fdcuk_format == "extra" and lg.fdcuk_code}
+        discovered: list[str] = []
+
+        def main_league(div: str) -> League | None:
+            lg = by_main.get(div)
+            if lg is None:
+                lg = by_main[div] = self.leagues.add_discovered(League(
+                    div, f"Liga {div}", "Inne", fdcuk_code=div, fdcuk_format="main"))
+                discovered.append(lg.code)
+            return lg if lg.enabled else None
+
+        def extra_league(country: str, name: str) -> League | None:
+            code = FDCUK_EXTRA_COUNTRIES.get(country)
+            lg = by_extra.get(code) if code else None
+            if lg is None:
+                key = code or ("X" + "".join(ch for ch in country.upper() if ch.isalpha())[:4])
+                lg = by_extra[key] = self.leagues.add_discovered(League(
+                    key, name or country, country, fdcuk_code=code, fdcuk_format="extra" if code else None,
+                    season_style="calendar", timezone="UTC"))
+                discovered.append(lg.code)
+            return lg if lg.enabled else None
+
+        self._step(report, self.csv, "fixtures", None,
+                   lambda: self._save(self.csv.upcoming_main(main_league, now, ttl=ttl)), detail="fixtures.csv")
+        self._step(report, self.csv, "fixtures", None,
+                   lambda: self._save(self.csv.upcoming_extra(extra_league, now, ttl=ttl)),
+                   detail="new_league_fixtures.csv")
+        if discovered:
+            log.info("Nowe ligi w plikach football-data.co.uk: %s", ", ".join(discovered))
+
+        for league in self.leagues.all(enabled_only=True):
+            for season in self._fixture_seasons(league, now):
+                if league.openligadb and use[self.openligadb.name]:
+                    self._season_file(report, self.openligadb, league, season, past=False, refresh=ttl,
+                                      step="fixtures")
+                if league.openfootball and use[self.openfootball.name]:
+                    self._season_file(report, self.openfootball, league, season, past=False,
+                                      refresh=CURRENT_SEASON_REFRESH, step="fixtures")
+
+    @staticmethod
+    def _fixture_seasons(league: League, now: datetime) -> list[int]:
+        """Bieżący sezon, a na przełomie sezonów także następny (terminarz nowego sezonu pojawia się wcześniej)."""
+        current = league.season_at(now)
+        edge = now.month in (5, 6, 7) if league.season_style == "split" else now.month == 12
+        return [current, current + 1] if edge else [current]
 
     # -- całość ----------------------------------------------------------------------
     def run_all(self, *, force: bool = False, history: bool = True, odds: bool = True) -> SyncReport:
-        """Pełna synchronizacja. Wywołania są serializowane (jeden zapis naraz)."""
+        """Pełna synchronizacja. Wywołania są serializowane (jeden zapis naraz).
+        (`odds` – zgodność wsteczna: kursy przychodzą razem z terminarzem football-data.co.uk.)"""
         with self._run_lock, self._forced(force):
             report = SyncReport(started=self.clock())
+            self.sync_club_names(report)
+            self.sync_fixtures(report)       # najpierw terminarz (szybko), potem historia (pierwszy raz – minuty)
             if history:
                 self.sync_history(report)
-            self.sync_fixtures(report)
-            if odds:
-                self.sync_missing_odds(report)
-            self.sync_missing_results(report)
             self.http.purge(older_than_days=30)   # stare, przeterminowane odpowiedzi z cache
             self._finish(report)
             self.set_meta("last_sync", report.to_json())
             return report
 
     def run(self, fn: Callable[[SyncReport], None], *, force: bool = False) -> SyncReport:
-        """Pojedynczy krok (np. tylko kursy) z tą samą obsługą błędów i statusów."""
+        """Pojedynczy krok z tą samą obsługą błędów i statusów."""
         with self._run_lock, self._forced(force):
             report = SyncReport(started=self.clock())
             fn(report)
             return self._finish(report)
 
-    # -- limity ----------------------------------------------------------------------
-    def quota_rows(self) -> list[QuotaRow]:
+    # -- stan źródeł ----------------------------------------------------------------------
+    def source_rows(self) -> list[SourceRow]:
+        states: dict[str, SourceState] = self.status.all()
+        use = self.enabled_sources()
         rows = []
-        states = self.status.all()
         for src in self.sources.values():
-            info: QuotaInfo | None = src.quota_info()
-            state = states.get(src.name)
-            if not src.has_key():
-                st, msg = "no_key", STATE_LABELS["no_key"]
-            elif state:
-                st, msg = state.state, state.message
-            else:
-                st, msg = "idle", ""
-            rows.append(QuotaRow(
-                source=src.name, label=src.label,
-                period=info.period if info else "-",
-                used=(info.used if info and info.used is not None else (info.local_used if info else None)),
-                limit=info.limit if info else None,
-                remaining=info.remaining if info else None,
-                from_headers=bool(info and info.from_headers),
-                calls_today=self.quota.calls_today(src.name),
-                state=st, message=msg,
-            ))
+            st = states.get(src.name)
+            state, message = (st.state, st.message) if st else ("idle", "")
+            if not use.get(src.name, True):
+                state, message = "disabled", "wyłączone w ustawieniach"
+            rows.append(SourceRow(src.name, src.label, SOURCE_ROLES.get(src.name, ""), use.get(src.name, True),
+                                  state, message, st.last_ok if st else None, self.quota.calls_today(src.name)))
         return rows
 
+    def data_as_of(self) -> float | None:
+        """Chwila ostatniej udanej aktualizacji głównego źródła (terminarz z kursami)."""
+        st = self.status.get(self.csv.name)
+        return st.last_ok if st else None
 
-__all__ = ["Budget", "QuotaRow", "StepResult", "SyncReport", "SyncService", "UsageEstimate", "load_last_report"]
+
+__all__ = ["SourceRow", "StepResult", "SyncReport", "SyncService", "load_last_report"]

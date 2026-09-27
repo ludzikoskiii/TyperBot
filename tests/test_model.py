@@ -224,3 +224,69 @@ def test_datetime_cutoff_accepted():
     _, _, rows = synthetic(n_teams=6, seasons=1)
     table = to_table(rows)
     assert build_window(table, datetime(2030, 1, 1, tzinfo=timezone.utc), ModelSettings(), max_age_days=1e5)
+
+
+# -- ranking Elo i model łączony ------------------------------------------------------------------
+def test_elo_orders_teams_by_true_strength_and_fits_beta():
+    from typerbot.model.elo import EloModel, EloTable
+
+    att, dfn, rows = synthetic(n_teams=16, seasons=4)
+    table = to_table(rows)
+    elo = EloTable.build(table, k=20.0)
+    model = EloModel.fit(table, elo, end(table))
+    ratings = [model.team(t + 1).rating for t in range(16)]
+    assert np.corrcoef(ratings, att + dfn)[0, 1] > 0.8          # ranking odzyskuje prawdziwą siłę
+    assert 0.3 < model.beta < 2.0
+    lh, la = model.expected_goals(model.team(1), model.team(1), "PL")
+    assert lh > la                                                # przewaga własnego boiska
+    nh, na = model.expected_goals(model.team(1), model.team(1), "PL", neutral=True)
+    assert nh == pytest.approx(na)                                # teren neutralny – bez przewagi
+
+
+def test_elo_uses_only_matches_before_cutoff():
+    from typerbot.model.elo import EloModel, EloTable
+
+    _, _, rows = synthetic(n_teams=8, seasons=2)
+    table = to_table(rows)
+    elo = EloTable.build(table)
+    cut = float(table.t[len(table) // 2])
+    model = EloModel.fit(table, elo, cut)
+    team = int(table.home_id[0])
+    before = np.flatnonzero(((table.home_id == team) | (table.away_id == team)) & (table.t < cut))
+    last = int(before[-1])
+    expected = elo.post_h[last] if table.home_id[last] == team else elo.post_a[last]
+    assert model.team(team).rating == pytest.approx(expected) and model.team(team).matches == len(before)
+
+
+def test_new_team_starts_below_league_average():
+    from typerbot.model.elo import INIT, NEW_TEAM_OFFSET, EloTable
+
+    _, _, rows = synthetic(n_teams=8, seasons=1)
+    late = rows[-1][0] + 1.0
+    rows = rows + [(late, 99, 1, 1, 1)]                              # beniaminek (drużyna 99)
+    table = to_table(rows)
+    elo = EloTable.build(table)
+    i = len(table) - 1
+    avg = np.mean([elo.post_h[j] if table.home_id[j] == t else elo.post_a[j]
+                   for t in range(1, 9) for j in [max(np.flatnonzero((table.home_id[:i] == t) | (table.away_id[:i] == t)))]])
+    assert elo.pre_h[i] == pytest.approx(avg + NEW_TEAM_OFFSET, abs=1.0) and elo.pre_h[i] < INIT + 1
+
+
+def test_hybrid_model_uses_elo_for_thin_data_and_national_teams():
+    from typerbot.model.predictor import HybridModel
+
+    _, _, rows = synthetic(n_teams=12, seasons=3)
+    table = to_table(rows)
+    national = [(r[0], r[1] + 100, r[2] + 100, r[3], r[4], "INT", False) for r in rows[:300]]
+    table = to_table(rows, cup_rows=national)
+    table.national = table.league == "INT"
+    table.neutral = np.zeros(len(table), dtype=bool)
+    settings = ModelSettings(elo_weight=0.5)
+    model = HybridModel.fit(table, end(table), settings)
+    full = model.predict(1, 2, "PL")
+    assert full.method == "Dixon-Coles + Elo" and not full.low_data
+    assert sum(full.probs[k] for k in (("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0))) == pytest.approx(1.0)
+    nat = model.predict(101, 102, "INT", neutral=True)
+    assert nat.method == "Elo" and nat.elo_home is not None
+    unknown = model.predict(1, 999, "PL")                          # drużyna bez historii – mało danych
+    assert unknown.low_data_away

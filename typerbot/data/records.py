@@ -57,6 +57,8 @@ class MatchRecord:
     away_hints: tuple[str, ...] = ()
     odds: list[OddsQuote] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    kickoff_exact: bool = True     # False – znana tylko data (godzina przybliżona)
+    neutral: bool = False          # teren neutralny (bez przewagi własnego boiska)
 
     @property
     def kickoff_iso(self) -> str:

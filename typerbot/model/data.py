@@ -38,6 +38,8 @@ class MatchTable:
     axg: np.ndarray
     league: np.ndarray       # kod rozgrywek (str)
     is_cup: np.ndarray
+    neutral: np.ndarray | None = None    # teren neutralny (bez przewagi boiska)
+    national: np.ndarray | None = None   # mecz reprezentacji
     _team_rows: dict[int, np.ndarray] = field(default_factory=dict, repr=False)
 
     def __len__(self) -> int:
@@ -54,14 +56,18 @@ class MatchTable:
         return self._team_rows.get(team_id, np.empty(0, dtype=np.int64))
 
     def subset(self, mask: np.ndarray) -> "MatchTable":
-        return MatchTable(*(getattr(self, f)[mask] for f in (
+        out = MatchTable(*(getattr(self, f)[mask] for f in (
             "match_id", "t", "season", "home_id", "away_id", "hg", "ag", "hxg", "axg", "league", "is_cup")))
+        out.neutral = self.neutral[mask] if self.neutral is not None else None
+        out.national = self.national[mask] if self.national is not None else None
+        return out
 
 
 def load_matches(db: Database, leagues: list[str] | None = None) -> MatchTable:
     """Wszystkie zakończone mecze z wynikiem, posortowane według czasu."""
     sql = ("SELECT m.id, m.kickoff, m.season, m.home_team_id, m.away_team_id, m.home_goals, m.away_goals, "
-           "m.home_xg, m.away_xg, m.league_code, l.is_cup FROM matches m JOIN leagues l ON l.code = m.league_code "
+           "m.home_xg, m.away_xg, m.league_code, l.is_cup, m.neutral, l.national FROM matches m "
+           "JOIN leagues l ON l.code = m.league_code "
            "WHERE m.status = 'FINISHED' AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL")
     params: tuple = ()
     if leagues:
@@ -80,6 +86,7 @@ def load_matches(db: Database, leagues: list[str] | None = None) -> MatchTable:
         hxg=np.array([np.nan if r["home_xg"] is None else r["home_xg"] for r in rows], dtype=float),
         axg=np.array([np.nan if r["away_xg"] is None else r["away_xg"] for r in rows], dtype=float),
         league=col("league_code", object), is_cup=col("is_cup", bool),
+        neutral=col("neutral", bool), national=col("national", bool),
     )
 
 

@@ -1,33 +1,31 @@
-"""Zakładka „Ustawienia”."""
+"""Zakładka „Ustawienia”: Ogólne (ligi, rynki, kursy, podatek), Źródła danych, Model i backtest."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
-    QInputDialog, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog, QMessageBox,
+    QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from typerbot.config.leagues import League
-from typerbot.config.secrets import KEYED_SOURCES, SecretStoreError, mask
 from typerbot.config.settings import MARKETS, Settings
 from typerbot.data.errors import STATE_LABELS
+from typerbot.data.sources import SOURCE_LABELS
+from typerbot.services.diagnostics import when_label
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
+from typerbot.ui.league_tree import LeagueTree
 from typerbot.ui.widgets import NumItem, hbox, label, make_table, text_item
 
-SOURCE_INFO = {
-    "football_data_org": ("football-data.org", "https://www.football-data.org/client/register"),
-    "the_odds_api": ("The Odds API", "https://the-odds-api.com"),
-    "oddspapi": ("OddsPapi", "https://oddspapi.io"),
-    "football_data_csv": ("football-data.co.uk", "https://www.football-data.co.uk"),
-}
-KEY_HINTS = {
-    "football_data_org": "zalecany – terminarz i szybkie wyniki lig top-5 i Ligi Mistrzów",
-    "the_odds_api": "opcjonalny – lista meczów Ekstraklasy i brakujące kursy (np. Liga Mistrzów)",
-    "oddspapi": "opcjonalny – brakujące kursy BTTS i podwójnej szansy (Superbet)",
-}
 MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "OU": "Powyżej/poniżej 2,5", "BTTS": "Obie strzelą"}
+SOURCE_LINKS = {
+    "football_data_csv": "https://www.football-data.co.uk",
+    "openfootball": "https://github.com/openfootball/football.json",
+    "openligadb": "https://www.openligadb.de",
+    "international": "https://github.com/martj42/international_results",
+    "club_names": "https://github.com/openfootball/clubs",
+}
+OPTIONAL_SOURCES = {"openfootball": "openfootball", "openligadb": "openligadb", "international": "international"}
 
 
 def _dspin(lo, hi, dec=2, step=0.1, suffix=""):
@@ -48,134 +46,43 @@ def _spin(lo, hi, suffix=""):
     return s
 
 
-class LeagueDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Dodaj ligę")
-        self.code, self.name, self.country = QLineEdit(), QLineEdit(), QLineEdit()
-        self.cup = QCheckBox("Rozgrywki pucharowe (drużyny z różnych lig)")
-        self.fd, self.odds, self.papi = QLineEdit(), QLineEdit(), _spin(0, 1000000)
-        self.csv_code = QLineEdit()
-        self.csv_format = QComboBox()
-        self.csv_format.addItem("brak", None)
-        self.csv_format.addItem("jeden plik na sezon (np. E0)", "main")
-        self.csv_format.addItem("jeden plik ze wszystkimi sezonami (np. POL)", "extra")
-        form = QFormLayout()
-        form.addRow("Kod (np. ELC)", self.code)
-        form.addRow("Nazwa", self.name)
-        form.addRow("Kraj", self.country)
-        form.addRow("", self.cup)
-        form.addRow("football-data.org – kod", self.fd)
-        form.addRow("The Odds API – klucz", self.odds)
-        form.addRow("OddsPapi – tournamentId", self.papi)
-        form.addRow("football-data.co.uk – kod pliku", self.csv_code)
-        form.addRow("football-data.co.uk – format", self.csv_format)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay = QVBoxLayout(self)
-        lay.addLayout(form)
-        lay.addWidget(label("Wystarczy identyfikator w jednym źródle; brakujące zostaw puste.", "muted"))
-        lay.addWidget(buttons)
-
-    def league(self) -> League | None:
-        code = self.code.text().strip().upper()
-        if not code or not self.name.text().strip():
-            return None
-        return League(code, self.name.text().strip(), self.country.text().strip(), self.cup.isChecked(),
-                      self.fd.text().strip() or None, self.odds.text().strip() or None,
-                      self.papi.value() or None, self.csv_code.text().strip() or None, self.csv_format.currentData(),
-                      True, 50)
-
-
 class SettingsTab(QWidget):
     def __init__(self, ctx: AppContext):
         super().__init__()
         self.ctx = ctx
-        # klucze API
-        self.key_edits: dict[str, QLineEdit] = {}
-        self.key_labels: dict[str, object] = {}
-        keys_box = QGroupBox("Klucze API – wszystkie darmowe, bez karty (zapisywane w Menedżerze poświadczeń Windows)")
-        kl = QGridLayout(keys_box)
-        kl.addWidget(label("football-data.co.uk – główne źródło (wyniki, kursy, nadchodzące mecze) nie wymaga "
-                           "klucza. Klucze poniżej są opcjonalne i tylko uzupełniają dane.", "muted", wrap=True),
-                     0, 0, 1, 6)
-        for i, source in enumerate(KEYED_SOURCES, start=1):
-            name, url = SOURCE_INFO[source]
-            edit = QLineEdit()
-            edit.setEchoMode(QLineEdit.Password)
-            edit.setPlaceholderText("wklej nowy klucz")
-            btn = QPushButton("Zapisz")
-            btn.clicked.connect(lambda _=False, s=source: self.save_key(s))
-            current = label("", "muted")
-            link = label(f"<a href='{url}' style='color:{theme.ACCENT}'>jak zdobyć</a>")
-            link.setOpenExternalLinks(True)
-            self.key_edits[source], self.key_labels[source] = edit, current
-            kl.addWidget(label(name), i, 0)
-            kl.addWidget(edit, i, 1)
-            kl.addWidget(btn, i, 2)
-            kl.addWidget(current, i, 3)
-            kl.addWidget(link, i, 4)
-            kl.addWidget(label(KEY_HINTS.get(source, ""), "muted"), i, 5)
-        if ctx.demo:
-            kl.addWidget(label("Tryb demo – klucze nie są potrzebne ani zapisywane.", "warning"), len(KEYED_SOURCES) + 1,
-                         0, 1, 6)
 
-        # ligi
-        leagues_box = QGroupBox("Ligi")
-        self.league_table = make_table(["Aktywna", "Kod", "Nazwa", "Kraj", "Źródła"], stretch=4, sortable=False)
-        self.league_table.setMinimumHeight(260)
-        add_league = QPushButton("Dodaj ligę…")
-        add_league.clicked.connect(self.add_league)
+        # -- Ogólne: ligi, rynki, kursy, podatek --------------------------------------------------------------
+        leagues_box = QGroupBox("Ligi używane w aplikacji (pobierane dane i generator)")
+        self.leagues = LeagueTree(counts_label="Nadchodzące")
+        self.leagues.setMinimumHeight(360)
         ll = QVBoxLayout(leagues_box)
-        ll.addWidget(self.league_table)
-        ll.addLayout(hbox(add_league, None))
+        ll.addWidget(label("Lista pochodzi z danych: 38 lig z football-data.co.uk oraz ligi z openfootball i "
+                           "OpenLigaDB; nowe ligi z plików dopisują się same. Zaznacz kraj, aby wybrać wszystkie "
+                           "jego ligi.", "muted", wrap=True))
+        ll.addWidget(self.leagues)
 
-        # rynki
         markets_box = QGroupBox("Rynki")
         self.market_checks = {m: QCheckBox(MARKET_NAMES[m]) for m in MARKETS}
         ml = QVBoxLayout(markets_box)
         for cb in self.market_checks.values():
             ml.addWidget(cb)
 
-        # model
-        model_box = QGroupBox("Model prognoz")
-        self.last_matches = _spin(5, 200, " meczów")
-        self.half_life = _dspin(10, 2000, 0, 10, " dni")
-        self.min_matches = _spin(1, 30, " meczów")
-        self.regularization = _dspin(0, 200, 1, 1)
-        self.model_weight = _spin(0, 100, " %")
-        self.dixon_coles = QCheckBox("Korekta Dixona-Colesa (0:0, 1:0, 0:1, 1:1)")
-        mf = QFormLayout(model_box)
-        mf.addRow("Ostatnie mecze drużyny", self.last_matches)
-        mf.addRow("Półokres wygaszania", self.half_life)
-        mf.addRow("„Mało danych” poniżej", self.min_matches)
-        mf.addRow("Regularyzacja", self.regularization)
-        mf.addRow("Udział modelu w prognozie", self.model_weight)
-        mf.addRow("", self.dixon_coles)
-        mf.addRow(label("Resztę prognozy stanowi rynek (kursy bez marży). Najlepsze wartości dobierzesz poniżej: "
-                        "„Strojenie parametrów” → „Zapisz najlepsze ustawienia”.", "muted", wrap=True))
-
-        # kursy i podatek
         odds_box = QGroupBox("Kursy")
-        self.bookmaker = QLineEdit()
         self.reference = QComboBox()
-        self.reference.addItem("Wybrany bukmacher (brak → średnia)", "bookmaker")
         self.reference.addItem("Średnia rynkowa", "average")
         self.reference.addItem("Najwyższy kurs", "best")
+        self.reference.addItem("Pinnacle (brak → średnia)", "pinnacle")
+        self.reference.addItem("Bet365 (brak → średnia)", "bet365")
         self.margin = QComboBox()
         self.margin.addItem("proporcjonalnie", "proportional")
         self.margin.addItem("metoda Shina", "shin")
-        self.region = QComboBox()
-        for r in ("eu", "uk", "us", "au"):
-            self.region.addItem(r, r)
-        self.cache_hours = _dspin(0.5, 48, 1, 0.5, " h")
+        self.estimated_margin = _dspin(0, 30, 1, 0.5, " %")
         of = QFormLayout(odds_box)
-        of.addRow("Bukmacher referencyjny", self.bookmaker)
         of.addRow("Kurs do oceny typów", self.reference)
         of.addRow("Usuwanie marży", self.margin)
-        of.addRow("Region (The Odds API)", self.region)
-        of.addRow("Ważność kursów w cache", self.cache_hours)
+        of.addRow("Marża kursu szacunkowego", self.estimated_margin)
+        of.addRow(label("Kurs szacunkowy (≈) dostają typy bez kursu w źródłach: 1 / (prawdopodobieństwo × "
+                        "(1 + marża)). Jest wyraźnie oznaczony – sprawdź go u bukmachera.", "muted", wrap=True))
 
         tax_box = QGroupBox("Podatek")
         self.stake_tax = _dspin(0, 50, 1, 1, " %")
@@ -186,33 +93,35 @@ class SettingsTab(QWidget):
         tf.addRow(label("Kurs po podatku = kurs × 0,88. Wyniki w historii liczone są w jednostkach "
                         "(1 kupon = 1 jednostka) – aplikacja nie używa kwot.", "muted", wrap=True))
 
+        # -- Źródła danych ------------------------------------------------------------------------------------
+        sources_box = QGroupBox("Źródła danych – wszystkie darmowe, bez klucza i rejestracji")
+        self.sources_table = make_table(["Źródło", "Co daje", "Stan", "Dane z", "Zapytań dziś"], stretch=1,
+                                        sortable=False)
+        self.sources_table.setMinimumHeight(190)
+        self.source_checks = {key: QCheckBox(f"Używaj: {SOURCE_LABELS[name]}")
+                              for key, name in OPTIONAL_SOURCES.items()}
+        sl = QVBoxLayout(sources_box)
+        sl.addWidget(self.sources_table)
+        for cb in self.source_checks.values():
+            sl.addWidget(cb)
+        links = " · ".join(f"<a href='{url}' style='color:{theme.ACCENT}'>{SOURCE_LABELS[name]}</a>"
+                           for name, url in SOURCE_LINKS.items())
+        link_label = label(links)
+        link_label.setOpenExternalLinks(True)
+        sl.addWidget(link_label)
+        sl.addWidget(label("Wszystko, co pobrane, zostaje w bazie: bez internetu albo przy awarii źródła aplikacja "
+                           "działa na ostatnich danych (kolumna „Dane z”). Awaria jednego źródła nie blokuje "
+                           "pozostałych.", "muted", wrap=True))
+
         sync_box = QGroupBox("Pobieranie danych")
         self.fixtures_hours = _dspin(0.5, 48, 1, 0.5, " h")
-        self.csv_seasons = _spin(3, 25, " sezonów")
-        self.horizon = _spin(1, 14, " dni")
-        self.odds_api_budget = _spin(0, 500, " kredytów/mies.")
-        self.papi_budget = _spin(0, 250, " zapytań/mies.")
+        self.csv_seasons = _spin(2, 25, " sezonów")
         sf = QFormLayout(sync_box)
         sf.addRow("Odświeżanie automatyczne co", self.fixtures_hours)
         sf.addRow("Historia z football-data.co.uk", self.csv_seasons)
-        sf.addRow("Uzupełniaj kursy na najbliższe", self.horizon)
-        sf.addRow("The Odds API – budżet aplikacji", self.odds_api_budget)
-        sf.addRow("OddsPapi – budżet aplikacji", self.papi_budget)
-        sf.addRow(label("Źródła z limitem są tylko uzupełnieniem: raz dziennie, tylko ligi z brakującymi kursami, "
-                        "budżet miesięczny rozłożony równo na dni – limit planu nie wyczerpie się.", "muted",
-                        wrap=True))
-
-
-        quota_box = QGroupBox("Limity API i szacowane zużycie w tym miesiącu")
-        self.quota_table = make_table(["Źródło", "Okres", "Zużyte", "Limit", "Zostało", "Dziś zapytań", "Stan"],
-                                      stretch=6, sortable=False)
-        self.quota_table.setMinimumHeight(170)
-        self.usage_table = make_table(["Źródło", "Limit planu", "Budżet aplikacji", "Zużyto w mies.", "Dziś",
-                                       "Na dziś", "Szacunek na miesiąc", "Zasady"], stretch=7, sortable=False)
-        self.usage_table.setMinimumHeight(110)
-        ql = QVBoxLayout(quota_box)
-        ql.addWidget(self.quota_table)
-        ql.addWidget(self.usage_table)
+        sf.addRow(label("Pierwsze pobranie historii wszystkich lig trwa kilka minut (pliki są pobierane raz, "
+                        "potem tylko bieżący sezon). Kursy na weekend pojawiają się w piątek, na środek tygodnia – "
+                        "we wtorek; wcześniej terminarz daje openfootball.", "muted", wrap=True))
 
         teams_box = QGroupBox("Dopasowanie nazw drużyn do sprawdzenia")
         self.teams_table = make_table(["Liga", "Źródło", "Nazwa w źródle", "Połączona z", "Metoda", "Zgodność"],
@@ -223,8 +132,35 @@ class SettingsTab(QWidget):
         confirm.clicked.connect(self.confirm_alias)
         merge.clicked.connect(self.merge_alias)
         tl = QVBoxLayout(teams_box)
+        tl.addWidget(label("Nazwy z różnych źródeł (np. „Man United” i „Manchester United FC”) są łączone "
+                           "automatycznie – także na podstawie listy wariantów nazw klubów z openfootball. "
+                           "Tu są tylko dopasowania niepewne.", "muted", wrap=True))
         tl.addWidget(self.teams_table)
         tl.addLayout(hbox(confirm, merge, None))
+
+        # -- Model ------------------------------------------------------------------------------------------
+        model_box = QGroupBox("Model prognoz")
+        self.last_matches = _spin(5, 200, " meczów")
+        self.half_life = _dspin(10, 2000, 0, 10, " dni")
+        self.min_matches = _spin(1, 30, " meczów")
+        self.regularization = _dspin(0, 200, 1, 1)
+        self.model_weight = _spin(0, 100, " %")
+        self.elo_weight = _spin(0, 100, " %")
+        self.elo_k = _dspin(5, 60, 0, 1)
+        self.dixon_coles = QCheckBox("Korekta Dixona-Colesa (0:0, 1:0, 0:1, 1:1)")
+        mf = QFormLayout(model_box)
+        mf.addRow("Ostatnie mecze drużyny", self.last_matches)
+        mf.addRow("Półokres wygaszania", self.half_life)
+        mf.addRow("„Mało danych” poniżej", self.min_matches)
+        mf.addRow("Regularyzacja", self.regularization)
+        mf.addRow("Udział rankingu Elo w modelu", self.elo_weight)
+        mf.addRow("Szybkość zmian Elo (K)", self.elo_k)
+        mf.addRow("Udział modelu w prognozie", self.model_weight)
+        mf.addRow("", self.dixon_coles)
+        mf.addRow(label("Model = Dixon-Coles połączony z rankingiem Elo (z samych wyników – działa też dla lig "
+                        "bez szczegółowych statystyk i dla reprezentacji). Resztę prognozy stanowi rynek (kursy bez "
+                        "marży), gdy są kursy. Najlepsze wartości dobierzesz poniżej: „Strojenie parametrów”.",
+                        "muted", wrap=True))
 
         self.save_btn = QPushButton("Zapisz ustawienia")
         self.save_btn.setProperty("role", "primary")
@@ -253,9 +189,15 @@ class SettingsTab(QWidget):
         model_box.setMaximumWidth(760)
         mpl.addWidget(model_box)
         mpl.addWidget(self.backtest, 1)
+        side = QWidget()
+        sdl = QVBoxLayout(side)
+        sdl.setContentsMargins(0, 0, 0, 0)
+        for box in (markets_box, odds_box, tax_box):
+            sdl.addWidget(box)
+        sdl.addStretch(1)
         self.pages = QTabWidget()
-        self.pages.addTab(page((leagues_box, markets_box), (odds_box, tax_box)), "Ogólne")
-        self.pages.addTab(page((keys_box,), (sync_box,), (quota_box,), (teams_box,)), "Źródła danych")
+        self.pages.addTab(page((leagues_box, side)), "Ogólne")
+        self.pages.addTab(page((sources_box,), (sync_box,), (teams_box,)), "Źródła danych")
         self.pages.addTab(model_page, "Model i backtest")
         lay = QVBoxLayout(self)
         lay.addWidget(self.pages, 1)
@@ -268,25 +210,20 @@ class SettingsTab(QWidget):
         self.refresh_live()
 
     # -- wczytanie / zapis ------------------------------------------------------------------------
+    def load_leagues(self, keep_checks: bool = False) -> None:
+        """Ligi z bazy; `keep_checks` – zachowaj niezapisane zaznaczenia (nowe ligi według „aktywna”)."""
+        rows = self.ctx.sync.leagues.with_counts(self.ctx.now())
+        shown = set(self.leagues.codes())
+        current = set(self.leagues.checked_codes()) if keep_checks else set()
+        checked = []
+        for r in rows:
+            known = keep_checks and r.league.code in shown
+            if (r.league.code in current) if known else r.league.enabled:
+                checked.append(r.league.code)
+        self.leagues.set_leagues(rows, checked, only_with_data=False)
+
     def load(self, s: Settings) -> None:
-        for source in KEYED_SOURCES:
-            self.key_labels[source].setText(f"obecny: {mask(self.ctx.secrets.get(source))}")
-        t = self.league_table
-        t.setRowCount(0)
-        for lg in self.ctx.sync.leagues.all():
-            r = t.rowCount()
-            t.insertRow(r)
-            chk = text_item("")
-            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            chk.setCheckState(Qt.Checked if lg.enabled else Qt.Unchecked)
-            chk.setData(Qt.UserRole, lg.code)
-            t.setItem(r, 0, chk)
-            t.setItem(r, 1, text_item(lg.code, bold=True))
-            t.setItem(r, 2, text_item(lg.name))
-            t.setItem(r, 3, text_item(lg.country))
-            sources = [n for n, v in (("football-data.co.uk", lg.fdcuk_code), ("football-data.org", lg.fd_org_code),
-                                      ("The Odds API", lg.odds_api_key), ("OddsPapi", lg.oddspapi_id)) if v]
-            t.setItem(r, 4, text_item(", ".join(sources), theme.MUTED))
+        self.load_leagues()
         for m, cb in self.market_checks.items():
             cb.setChecked(m in s.markets_enabled)
         m = s.model
@@ -295,19 +232,18 @@ class SettingsTab(QWidget):
         self.min_matches.setValue(m.min_matches)
         self.regularization.setValue(m.regularization)
         self.model_weight.setValue(round(m.model_weight * 100))
+        self.elo_weight.setValue(round(m.elo_weight * 100))
+        self.elo_k.setValue(m.elo_k)
         self.dixon_coles.setChecked(m.dixon_coles)
-        self.bookmaker.setText(s.odds.bookmaker)
-        for box, value in ((self.reference, s.odds.reference), (self.margin, s.odds.margin_method),
-                           (self.region, s.odds.region)):
+        for box, value in ((self.reference, s.odds.reference), (self.margin, s.odds.margin_method)):
             box.setCurrentIndex(max(0, box.findData(value)))
-        self.cache_hours.setValue(s.odds.cache_hours)
+        self.estimated_margin.setValue(s.odds.estimated_margin * 100)
         self.stake_tax.setValue(s.tax.stake_tax * 100)
         self.pays_tax.setChecked(s.tax.bookmaker_pays_tax)
         self.fixtures_hours.setValue(s.sync.fixtures_every_hours)
         self.csv_seasons.setValue(s.sync.csv_seasons)
-        self.horizon.setValue(s.sync.odds_horizon_days)
-        self.odds_api_budget.setValue(s.sync.odds_api_monthly_budget)
-        self.papi_budget.setValue(s.sync.oddspapi_monthly_budget)
+        for key, cb in self.source_checks.items():
+            cb.setChecked(getattr(s.sync, key))
 
     def collect(self) -> Settings:
         s = self.ctx.settings()
@@ -317,19 +253,18 @@ class SettingsTab(QWidget):
         s.model.min_matches = self.min_matches.value()
         s.model.regularization = self.regularization.value()
         s.model.model_weight = self.model_weight.value() / 100
+        s.model.elo_weight = self.elo_weight.value() / 100
+        s.model.elo_k = self.elo_k.value()
         s.model.dixon_coles = self.dixon_coles.isChecked()
-        s.odds.bookmaker = self.bookmaker.text().strip().lower()
         s.odds.reference = self.reference.currentData()
         s.odds.margin_method = self.margin.currentData()
-        s.odds.region = self.region.currentData()
-        s.odds.cache_hours = self.cache_hours.value()
+        s.odds.estimated_margin = round(self.estimated_margin.value() / 100, 4)
         s.tax.stake_tax = self.stake_tax.value() / 100
         s.tax.bookmaker_pays_tax = self.pays_tax.isChecked()
         s.sync.fixtures_every_hours = self.fixtures_hours.value()
         s.sync.csv_seasons = self.csv_seasons.value()
-        s.sync.odds_horizon_days = self.horizon.value()
-        s.sync.odds_api_monthly_budget = self.odds_api_budget.value()
-        s.sync.oddspapi_monthly_budget = self.papi_budget.value()
+        for key, cb in self.source_checks.items():
+            setattr(s.sync, key, cb.isChecked())
         s.coupon.markets = [m for m in s.coupon.markets if m in s.markets_enabled] or list(s.markets_enabled)
         return s
 
@@ -338,73 +273,38 @@ class SettingsTab(QWidget):
         if not settings.markets_enabled:
             QMessageBox.warning(self, "Ustawienia", "Włącz co najmniej jeden rynek.")
             return
-        t = self.league_table
-        for r in range(t.rowCount()):
-            item = t.item(r, 0)
-            self.ctx.sync.leagues.set_enabled(item.data(Qt.UserRole), item.checkState() == Qt.Checked)
+        if not self.leagues.checked_codes():
+            QMessageBox.warning(self, "Ustawienia", "Zaznacz co najmniej jedną ligę.")
+            return
+        checked = set(self.leagues.checked_codes())
+        for code in self.leagues.codes():
+            self.ctx.sync.leagues.set_enabled(code, code in checked)
         self.ctx.save_settings(settings)
         self.status.setText("Zapisano ustawienia.")
 
     def restore_defaults(self) -> None:
-        if QMessageBox.question(self, "Ustawienia", "Przywrócić domyślne ustawienia (bez kluczy i lig)?") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Ustawienia", "Przywrócić domyślne ustawienia (bez lig)?") != QMessageBox.Yes:
             return
         self.load(Settings())
         self.status.setText("Wczytano wartości domyślne – kliknij „Zapisz ustawienia”, aby je zastosować.")
 
-    def save_key(self, source: str) -> None:
-        value = self.key_edits[source].text().strip()
-        if not value:
-            return
-        try:
-            self.ctx.secrets.set(source, value)
-        except SecretStoreError as exc:
-            QMessageBox.critical(self, "Klucz API", str(exc))
-            return
-        self.key_edits[source].clear()
-        self.key_labels[source].setText(f"obecny: {mask(value)}")
-        self.status.setText(f"Zapisano klucz {SOURCE_INFO[source][0]}. Odśwież dane, aby z niego skorzystać.")
-
-    def add_league(self) -> None:
-        dlg = LeagueDialog(self)
-        if dlg.exec() == QDialog.Accepted:
-            league = dlg.league()
-            if league is None:
-                QMessageBox.warning(self, "Dodaj ligę", "Podaj kod i nazwę ligi.")
-                return
-            self.ctx.sync.leagues.save(league)
-            self.load(self.ctx.settings())
-            self.ctx.hub.settings_changed.emit()
-
     # -- dane na żywo -------------------------------------------------------------------------------
     def refresh_live(self) -> None:
-        period = {"minute": "minuta", "day": "dzień", "month": "miesiąc", "-": "–"}
-        t = self.quota_table
+        self.load_leagues(keep_checks=True)
+        t = self.sources_table
         t.setRowCount(0)
-        for q in self.ctx.sync.quota_rows():
+        for row in self.ctx.sync.source_rows():
             r = t.rowCount()
             t.insertRow(r)
-            t.setItem(r, 0, text_item(q.label, bold=True))
-            t.setItem(r, 1, text_item(period.get(q.period, q.period)))
-            t.setItem(r, 2, NumItem("–" if q.used is None else str(q.used), q.used))
-            t.setItem(r, 3, NumItem("–" if q.limit is None else str(q.limit), q.limit))
-            t.setItem(r, 4, NumItem("–" if q.remaining is None else str(q.remaining), q.remaining))
-            t.setItem(r, 5, NumItem(str(q.calls_today), q.calls_today))
-            color = theme.POSITIVE if q.state == "ok" else (theme.MUTED if q.state == "idle" else theme.WARNING)
-            text = STATE_LABELS.get(q.state, q.state) + (f" – {q.message}" if q.message and q.state != "ok" else "")
-            t.setItem(r, 6, text_item(text, color))
-        u = self.usage_table
-        u.setRowCount(0)
-        for e in self.ctx.sync.usage_estimates():
-            r = u.rowCount()
-            u.insertRow(r)
-            u.setItem(r, 0, text_item(e.label, bold=True))
-            u.setItem(r, 1, NumItem(str(e.plan_limit), e.plan_limit))
-            u.setItem(r, 2, NumItem(str(e.app_limit), e.app_limit))
-            u.setItem(r, 3, NumItem(str(e.used_month), e.used_month))
-            u.setItem(r, 4, NumItem(str(e.used_today), e.used_today))
-            u.setItem(r, 5, NumItem(str(e.daily_allowance), e.daily_allowance))
-            u.setItem(r, 6, NumItem(f"≈ {e.projected}", e.projected))
-            u.setItem(r, 7, text_item(e.rule, theme.MUTED, tooltip=e.rule))
+            t.setItem(r, 0, text_item(row.label, bold=True))
+            t.setItem(r, 1, text_item(row.role, theme.MUTED, tooltip=row.role))
+            color = theme.POSITIVE if row.state == "ok" else (
+                theme.MUTED if row.state in ("idle", "disabled") else theme.WARNING)
+            text = STATE_LABELS.get(row.state, row.state) + (f" – {row.message}" if row.message and row.state != "ok"
+                                                              else "")
+            t.setItem(r, 2, text_item(text, color, tooltip=text))
+            t.setItem(r, 3, text_item(when_label(row.last_ok)))
+            t.setItem(r, 4, NumItem(str(row.calls_today), row.calls_today))
         tt = self.teams_table
         tt.setRowCount(0)
         for row in self.ctx.sync.matches.matcher.review_list():
@@ -413,7 +313,7 @@ class SettingsTab(QWidget):
             item = text_item(row["league_code"])
             item.setData(Qt.UserRole, (row["source"], row["league_code"], row["name"], row["team_id"]))
             tt.setItem(r, 0, item)
-            tt.setItem(r, 1, text_item(SOURCE_INFO.get(row["source"], (row["source"],))[0]))
+            tt.setItem(r, 1, text_item(SOURCE_LABELS.get(row["source"], row["source"])))
             tt.setItem(r, 2, text_item(row["name"], bold=True))
             tt.setItem(r, 3, text_item(row["team_name"]))
             tt.setItem(r, 4, text_item(row["method"]))

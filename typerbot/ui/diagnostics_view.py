@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import html
 
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from typerbot.data.errors import STATE_LABELS
 from typerbot.fmt import plural
-from typerbot.services.diagnostics import STEP_LABELS, Diagnosis, Problem
+from typerbot.services.diagnostics import STEP_LABELS, Diagnosis, Problem, _date, day_label, when_label
 from typerbot.ui import theme
 from typerbot.ui.widgets import NumItem, ProbabilityDelegate, hbox, label, make_table, prob_item, text_item
 
-STATE_COLORS = {"ok": theme.POSITIVE, "idle": theme.MUTED, "offline": theme.WARNING, "plan": theme.WARNING,
-                "quota": theme.NEGATIVE, "no_key": theme.WARNING, "auth": theme.NEGATIVE, "error": theme.NEGATIVE}
+STATE_COLORS = {"ok": theme.POSITIVE, "idle": theme.MUTED, "offline": theme.WARNING, "error": theme.NEGATIVE,
+                "disabled": theme.MUTED}
 
 
 def reason_html(diag: Diagnosis) -> str:
@@ -29,22 +29,35 @@ class DiagnosisPanel(QWidget):
         super().__init__(parent)
         self.diag = diag
         head = label(diag.headline(), "title" if diag.ok else "negative", wrap=True)
-        period = label(f"Zakres dat: {diag.period()}", "muted")
+        period = label(f"Zakres dat: {diag.period()} · dane z: {when_label(diag.data_as_of)}", "muted")
 
-        self.sources = make_table(["Źródło", "Mecze w zakresie", "Z kursami", "Wszystkie nadchodzące", "Stan"],
-                                  stretch=4, sortable=False)
+        self.sources = make_table(["Źródło", "Mecze w zakresie", "Z kursami", "Dni (mecze)", "Wszystkie nadchodzące",
+                                   "Dane z", "Stan"], stretch=3, sortable=False)
         for s in diag.sources:
             r = self.sources.rowCount()
             self.sources.insertRow(r)
             self.sources.setItem(r, 0, text_item(s.label))
             self.sources.setItem(r, 1, NumItem(str(s.matches), s.matches))
             self.sources.setItem(r, 2, NumItem(str(s.with_odds), s.with_odds))
-            self.sources.setItem(r, 3, NumItem(str(s.upcoming), s.upcoming))
+            days = ", ".join(f"{day_label(_date(d))}: {n}" for d, n in sorted(s.days.items())) or "–"
+            self.sources.setItem(r, 3, text_item(days, tooltip=days))
+            self.sources.setItem(r, 4, NumItem(str(s.upcoming), s.upcoming))
+            self.sources.setItem(r, 5, text_item(when_label(s.last_ok)))
             state = STATE_LABELS.get(s.state, s.state)
             if s.message and s.state != "ok" and s.message != state:
                 state += f" – {s.message}"
-            self.sources.setItem(r, 4, text_item(state, STATE_COLORS.get(s.state), tooltip=s.message))
+            self.sources.setItem(r, 6, text_item(state, STATE_COLORS.get(s.state), tooltip=s.message))
         self.sources.setFixedHeight(34 + 30 * max(1, len(diag.sources)))
+
+        self.days = make_table(["Dzień", "Mecze (wszystkie ligi)", "W wybranych ligach", "Z kursem bukmachera",
+                                "Ligi z meczami"], stretch=0, sortable=False)
+        for d in diag.days:
+            r = self.days.rowCount()
+            self.days.insertRow(r)
+            self.days.setItem(r, 0, text_item(day_label(_date(d.day))))
+            for c, v in enumerate((d.matches, d.selected, d.with_odds, d.leagues), start=1):
+                self.days.setItem(r, c, NumItem(str(v), v))
+        self.days.setFixedHeight(34 + 30 * max(1, len(diag.days)))
 
         self.stages = make_table(["Filtr", "Mecze", "Typy", "Zostało"], stretch=0, sortable=False)
         first = max((st.matches for st in diag.stages), default=0)
@@ -65,8 +78,10 @@ class DiagnosisPanel(QWidget):
         lay.addWidget(period)
         if diag.hints:
             lay.addWidget(label("Co zmienić:\n" + "\n".join(f"• {h}" for h in diag.hints), wrap=True))
-        lay.addWidget(label("Ile meczów przyszło z każdego źródła", "muted"))
+        lay.addWidget(label("Ile meczów przyszło z każdego źródła (wybrane ligi) i z których dni", "muted"))
         lay.addWidget(self.sources)
+        lay.addWidget(label("Mecze w kolejnych dniach zakresu", "muted"))
+        lay.addWidget(self.days)
         lay.addWidget(label("Ile zostaje po kolejnych filtrach generatora", "muted"))
         lay.addWidget(self.stages)
         if diag.notes:
@@ -89,8 +104,11 @@ class DiagnosisDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.button(QDialogButtonBox.Close).setText("Zamknij")
         buttons.rejected.connect(self.reject)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(DiagnosisPanel(diag))
         lay = QVBoxLayout(self)
-        lay.addWidget(DiagnosisPanel(diag), 1)
+        lay.addWidget(scroll, 1)
         lay.addLayout(hbox(copy, None, buttons))
 
 

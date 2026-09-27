@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tests.conftest import NOW
 from tests.test_betting import random_candidates
 from tests.test_sync import make_service
 from typerbot.betting.evaluation import evaluate_match, fair_probabilities
@@ -38,7 +37,8 @@ def test_evaluation_blend_reference_odds_implied_and_value():
     s = Settings()
     s.model.model_weight = 0.3
     s.odds.margin_method = "proportional"
-    odds = rows(superbet={H: 2.10, D: 3.30, A: 3.60}, unibet_eu={H: 2.00, D: 3.40, A: 3.80},
+    s.odds.reference = "bet365"
+    odds = rows(bet365={H: 2.10, D: 3.30, A: 3.60}, unibet_eu={H: 2.00, D: 3.40, A: 3.80},
                 pinnacle={H: 2.05, D: 3.50, A: 3.90})
     ev = {e.key: e for e in evaluate_match(1, MODEL, odds, s)}
     avg = {k: (odds[i]["price"] + odds[i + 3]["price"] + odds[i + 6]["price"]) / 3 for i, k in enumerate((H, D, A))}
@@ -46,13 +46,13 @@ def test_evaluation_blend_reference_odds_implied_and_value():
     h = ev[H]
     assert h.p_market == pytest.approx(fair[H], abs=1e-3)
     assert h.probability == pytest.approx(0.3 * 0.50 + 0.7 * h.p_market, abs=1e-6)
-    assert h.odds == 2.10 and h.source_label == "Superbet"
+    assert h.odds == 2.10 and h.source_label == "Bet365"
     sb = 1 / 2.10 / (1 / 2.10 + 1 / 3.30 + 1 / 3.60)
-    assert h.implied == pytest.approx(sb)                       # marża Superbet usunięta
+    assert h.implied == pytest.approx(sb)                       # marża bukmachera usunięta
     assert h.ev == pytest.approx(h.probability * 2.10 - 1)
     assert h.is_value == (h.probability * 2.10 > 1)
     assert h.ev_after_tax(s) == pytest.approx(h.probability * 2.10 * 0.88 - 1)
-    # Podwójna szansa: brak oferty -> kurs szacunkowy z 1X2 Superbet, prawdopodobieństwo rynku z 1X2
+    # Podwójna szansa: brak oferty -> kurs szacunkowy z 1X2 bukmachera, prawdopodobieństwo rynku z 1X2
     dc = ev[("DC", "1X", 0.0)]
     assert dc.odds_source == "estimated" and dc.odds > 1.0
     assert dc.p_market == pytest.approx(ev[H].p_market + ev[D].p_market)
@@ -68,9 +68,19 @@ def test_evaluation_falls_back_to_average_and_model():
     assert ev[("BTTS", "Y", 0.0)].odds is None
 
 
+def test_match_without_any_odds_gets_estimated_odds_from_model():
+    s = Settings()
+    ev = {e.key: e for e in evaluate_match(1, MODEL, [], s)}
+    h = ev[H]
+    assert h.estimated and h.odds == round(1 / (MODEL[H] * 1.07), 2)          # typowa marża 7%
+    assert h.probability == MODEL[H] and h.p_market is None
+    s.odds.estimated_margin = 0.10
+    assert next(e for e in evaluate_match(1, MODEL, [], s) if e.key == H).odds == round(1 / (MODEL[H] * 1.10), 2)
+
+
 def test_evaluation_respects_enabled_markets_and_manual_odds():
     s = Settings()
-    odds = rows(superbet={H: 2.1, D: 3.3, A: 3.6})
+    odds = rows(bet365={H: 2.1, D: 3.3, A: 3.6})
     ev = evaluate_match(1, MODEL, odds, s, markets=["1X2"], manual_odds={H: 2.25})
     assert {e.key[0] for e in ev} == {"1X2"}
     h = next(e for e in ev if e.key == H)
@@ -80,7 +90,7 @@ def test_evaluation_respects_enabled_markets_and_manual_odds():
 def test_model_weight_one_uses_model_only():
     s = Settings()
     s.model.model_weight = 1.0
-    ev = evaluate_match(1, MODEL, rows(superbet={H: 2.1, D: 3.3, A: 3.6}), s)
+    ev = evaluate_match(1, MODEL, rows(bet365={H: 2.1, D: 3.3, A: 3.6}), s)
     assert next(e for e in ev if e.key == H).probability == MODEL[H]
 
 
@@ -113,16 +123,19 @@ def test_alternatives_differ_by_at_least_half():
 
 
 # -- serwis kuponów (dane demo) ------------------------------------------------------------------------
+SEASON_NOW = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc)     # zwykły tydzień sezonu (po przerwie FIFA)
+
+
 @pytest.fixture(scope="module")
 def world():
-    return DemoWorld(NOW)
+    return DemoWorld(SEASON_NOW)
 
 
 @pytest.fixture
 def coupon_service(db, secrets, world, clock):
-    sync, _ = make_service(db, secrets, world, clock)
+    sync, _ = make_service(db, secrets, world, clock, now=SEASON_NOW)
     sync.run_all()
-    return CouponService(db, now=lambda: NOW)
+    return CouponService(db, now=lambda: SEASON_NOW)
 
 
 def demo_cfg(**kw):
@@ -156,9 +169,11 @@ def test_low_data_teams_can_be_included(coupon_service):
     assert flagged, "beniaminek (Sunderland) powinien być oznaczony jako mało danych"
     assert any("mało danych" in f for f in flagged[0].flags)
     assert any(any(f.startswith("beniaminek") for f in info.flags) for info, _ in evaluated.values())
-    ids_default = {c.match_id for c in coupon_service.candidates(demo_cfg())}
-    ids_all = {c.match_id for c in coupon_service.candidates(demo_cfg(include_low_data=True))}
-    assert {i.match_id for i in flagged} <= ids_all and not ({i.match_id for i in flagged} & ids_default)
+    loose = {"min_probability": 0.2, "max_divergence": 1.0, "estimated_odds": "always"}
+    ids_default = {c.match_id for c in coupon_service.candidates(demo_cfg(**loose))}
+    ids_all = {c.match_id for c in coupon_service.candidates(demo_cfg(include_low_data=True, **loose))}
+    low = {i.match_id for i in flagged}
+    assert low & ids_all and not (low & ids_default)
 
 
 def test_league_and_market_filters(coupon_service):
@@ -174,10 +189,13 @@ def test_swap_and_manual_odds_recalculate(coupon_service):
     coupon = coupon_service.generate(cfg)[0]
     leg = coupon.legs[0]
     options = coupon_service.swap_options(coupon, leg.match.match_id, cfg)
-    assert options and options[0].in_range
-    new = coupon_service.swap(coupon, leg.match.match_id, options[0])
-    assert new.odds == pytest.approx(options[0].new_odds)
-    assert (options[0].leg.match.match_id, options[0].leg.key) in {(x.match.match_id, x.key) for x in new.legs}
+    assert options
+    in_range = [o for o in options if o.in_range]
+    assert options[:len(in_range)] == in_range                  # najpierw zamienniki mieszczące się w kursie
+    opt = options[0]
+    new = coupon_service.swap(coupon, leg.match.match_id, opt)
+    assert new.odds == pytest.approx(opt.new_odds)
+    assert (opt.leg.match.match_id, opt.leg.key) in {(x.match.match_id, x.key) for x in new.legs}
     manual = coupon_service.set_manual_odds(new, new.legs[0].match.match_id, 2.0)
     assert manual.legs[0].selection.odds == 2.0 and manual.legs[0].selection.odds_source == "manual"
     assert manual.odds == pytest.approx(new.odds / new.legs[0].selection.odds * 2.0)
@@ -208,12 +226,12 @@ def test_generated_coupons_are_recorded_once(coupon_service):
     assert {leg.match_id for leg in stored.legs} == swapped.match_ids
 def test_date_windows(coupon_service):
     local = coupon_service.date_window(demo_cfg(date_range="tomorrow"))
-    assert (local[1] - local[0]) <= timedelta(days=1) and local[0] > NOW
+    assert (local[1] - local[0]) <= timedelta(days=1) and local[0] > SEASON_NOW
     today = coupon_service.date_window(demo_cfg(date_range="today"))
-    assert today[0] == NOW and today[1] < NOW + timedelta(days=1)
-    custom = coupon_service.date_window(demo_cfg(date_range="custom", date_from="2026-10-01", date_to="2026-10-03"))
-    assert custom[0] == datetime(2026, 9, 30, 22, 0, tzinfo=timezone.utc)   # 1.10 00:00 czasu polskiego
-    assert custom[1].date().isoformat() == "2026-10-03"
+    assert today[0] == SEASON_NOW and today[1] < SEASON_NOW + timedelta(days=1)
+    custom = coupon_service.date_window(demo_cfg(date_range="custom", date_from="2026-10-20", date_to="2026-10-22"))
+    assert custom[0] == datetime(2026, 10, 19, 22, 0, tzinfo=timezone.utc)   # 20.10 00:00 czasu polskiego
+    assert custom[1].date().isoformat() == "2026-10-22"
 
 
 def test_impossible_target_returns_no_coupons(coupon_service):

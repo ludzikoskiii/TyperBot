@@ -48,5 +48,6 @@ STATE_LABELS = {
     "plan": "Niedostępne w planie darmowym",
     "offline": "Brak połączenia",
     "error": "Błąd",
-    "idle": "Nie używane",
+    "idle": "Jeszcze nie pobierano",
+    "disabled": "Wyłączone",
 }

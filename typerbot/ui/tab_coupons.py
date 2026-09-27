@@ -10,16 +10,18 @@ from PySide6.QtCore import QDate, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFormLayout, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLayout, QListWidget, QListWidgetItem, QMenu, QMessageBox,
+    QFormLayout, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLayout, QMenu, QMessageBox,
     QPushButton, QScrollArea, QSpinBox, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
+from typerbot.betting.evaluation import ESTIMATED_NOTE
 from typerbot.config.settings import MARKETS, CouponSettings
 from typerbot.fmt import num, pct, plural, signed_pct
 from typerbot.services.coupons import Coupon, CouponLeg, CouponService, GenerationResult, SwapOption, kickoff_local
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
 from typerbot.ui.diagnostics_view import DiagnosisDialog, reason_html
+from typerbot.ui.league_tree import LeagueTree
 from typerbot.ui.tab_matches import MatchesTab
 from typerbot.ui.widgets import NumItem, ProbabilityDelegate, hbox, label, make_table, prob_item, set_role, text_item
 from typerbot.ui.workers import run_in_background
@@ -43,13 +45,14 @@ def coupon_text(coupon: Coupon, letter: str, league_names: dict[str, str]) -> st
     lines = [f"TyperBot – kupon {letter}"]
     for i, leg in enumerate(coupon.legs, 1):
         s, m = leg.selection, leg.match
-        est = " (kurs szacunkowy)" if s.odds_source == "estimated" else ""
+        est = f" ({ESTIMATED_NOTE})" if s.estimated else ""
         lines.append(f"{i}. {m.home} – {m.away} ({league_names.get(m.league, m.league)}, {when(m.kickoff)}): "
                      f"{s.label} @ {num(s.odds or 1.0)}{est}")
     lines.append(f"Kurs łączny: {num(coupon.odds)} (po podatku {num(coupon.odds_after_tax)})")
     lines.append(f"Szansa trafienia: {pct(coupon.probability, 1)}")
-    if any(leg.selection.odds_source == "estimated" for leg in coupon.legs):
-        lines.append("Kurs szacunkowy wyliczono z innych kursów – sprawdź go u bukmachera.")
+    if coupon.estimated_legs:
+        lines.insert(1, f"UWAGA: kupon z kursami szacunkowymi ({coupon.estimated_legs} z {len(coupon.legs)}) – "
+                        "sprawdź kursy u bukmachera, kurs łączny może być inny.")
     return "\n".join(lines)
 
 
@@ -84,7 +87,7 @@ class LegRow(QFrame):
         super().__init__()
         self.setProperty("role", "leg")
         s, m = leg.selection, leg.match
-        estimated = s.odds_source == "estimated"
+        estimated = s.estimated
         head = label(f"{league_name} · {when(m.kickoff)}", "muted")
         menu_btn = QToolButton()
         menu_btn.setText("⋯")
@@ -95,16 +98,17 @@ class LegRow(QFrame):
                           ("Usuń zdarzenie", "remove"), ("Szczegóły typu", "details")):
             menu.addAction(text, lambda k=key: self.action.emit(k, m.match_id))
         menu_btn.setMenu(menu)
-        teams = label(f"{m.home} – {m.away}")
+        teams = label(f"{m.home} – {m.away}", wrap=True)     # długie nazwy klubów zawijają się zamiast poszerzać kartę
         teams.setStyleSheet("font-weight: 600;")
         pick = label(f"Typ: <b>{s.label}</b>")
         odds = label(("≈ " if estimated else "") + num(s.odds or 1.0), "odds")
         if estimated:
             set_role(odds, "odds")
             odds.setStyleSheet(f"color: {theme.WARNING};")
-            odds.setToolTip("Kurs szacunkowy – wyliczony z innych kursów, bo nie ma go w żadnym źródle. "
-                            "Sprawdź u bukmachera.")
+            odds.setToolTip("Kurs szacunkowy – źródła nie podają kursu, więc wyliczono go z prognozy (albo z innych "
+                            "kursów meczu) z typową marżą bukmachera. Sprawdź u bukmachera.")
         chance = label(f"szansa {pct(s.probability)}", "muted")
+        est_note = label("≈ " + ESTIMATED_NOTE, "warning", wrap=True) if estimated else None
         reason = label(leg.summary or "", "muted", wrap=True)
         lay = QGridLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
@@ -117,8 +121,10 @@ class LegRow(QFrame):
         lay.addWidget(ProbBar(s.probability), 3, 0)
         lay.addWidget(chance, 3, 1, Qt.AlignRight)
         lay.addWidget(reason, 4, 0, 1, 2)
+        if est_note is not None:
+            lay.addWidget(est_note, 5, 0, 1, 2)
         if m.flags:
-            lay.addWidget(label("Uwaga: " + "; ".join(m.flags), "warning", wrap=True), 5, 0, 1, 2)
+            lay.addWidget(label("Uwaga: " + "; ".join(m.flags), "warning", wrap=True), 6, 0, 1, 2)
 
 
 class SlipCard(QFrame):
@@ -157,6 +163,14 @@ class SlipCard(QFrame):
         subtitle = "największa szansa trafienia" if self.letter == "A" else "alternatywa – inne mecze"
         self.body.addWidget(label(f"Kupon {self.letter}", "title"))
         self.body.addWidget(label(f"{subtitle} · {plural(len(c.legs), 'zdarzenie', 'zdarzenia', 'zdarzeń')}", "muted"))
+        if c.estimated_legs:
+            banner = QFrame()
+            banner.setProperty("role", "banner")
+            bl = QVBoxLayout(banner)
+            bl.setContentsMargins(8, 6, 8, 6)
+            bl.addWidget(label(f"≈ Kupon z kursami szacunkowymi ({c.estimated_legs} z {len(c.legs)}) – sprawdź kursy "
+                               "u bukmachera; kurs łączny może być inny.", "warning", wrap=True))
+            self.body.addWidget(banner)
         for leg in c.legs:
             row = LegRow(leg, self.league_names.get(leg.match.league, leg.match.league))
             row.action.connect(self._leg_action)
@@ -176,9 +190,6 @@ class SlipCard(QFrame):
         detail = f"model {pct(c.probability_model, 1)}" + (f" · rynek {pct(market, 1)}" if market is not None else "")
         totals.addWidget(label(detail, "muted"), 3, 1)
         self.body.addLayout(totals)
-        if any(leg.selection.odds_source == "estimated" for leg in c.legs):
-            self.body.addWidget(label("≈ kurs szacunkowy – wyliczony z innych kursów; sprawdź go u bukmachera.",
-                                      "warning", wrap=True))
         if not c.in_range:
             self.body.addWidget(label(f"Kurs łączny poza zakresem {num(c.target[0])}–{num(c.target[1])}.",
                                       "warning", wrap=True))
@@ -295,7 +306,7 @@ class CardGrid(QWidget):
         for r in range(self.grid.rowCount()):
             self.grid.setRowStretch(r, 0)
         for i, w in enumerate(self.items):
-            self.grid.addWidget(w, i // cols, i % cols, Qt.AlignTop)
+            self.grid.addWidget(w, i // cols, i % cols)
         rows = (len(self.items) + cols - 1) // cols
         self.grid.setRowStretch(rows, 1)
         self.grid.setColumnStretch(0 if self.fill else cols, 1)
@@ -435,11 +446,17 @@ class CouponsTab(QWidget):
         self.divergence.setRange(1, 50)
         self.divergence.setSuffix(" pkt proc.")
         self.divergence.setToolTip("Tryb „najwyższa szansa”: pomijamy typy, w których model i rynek różnią się bardziej")
-        self.leagues = QListWidget()
-        self.leagues.setMaximumHeight(150)
+        self.leagues = LeagueTree()
+        self.leagues.setMinimumHeight(240)
         self.markets = {m: QCheckBox(MARKET_NAMES[m]) for m in MARKETS}
         self.low_data = QCheckBox("Dopuść drużyny z małą liczbą danych")
-        self.estimated = QCheckBox("Dopuść kursy szacunkowe (≈)")
+        self.estimated = QComboBox()
+        self.estimated.addItem("gdy brak innych", "fallback")
+        self.estimated.addItem("zawsze dopuszczaj", "always")
+        self.estimated.addItem("nigdy", "never")
+        self.estimated.setToolTip("Kurs szacunkowy (≈) – z prognozy modelu z typową marżą bukmachera, gdy źródła nie "
+                                  "podają kursu. Kupon z takim kursem jest wyraźnie oznaczony – sprawdź kurs u "
+                                  "bukmachera.")
         self.save_defaults_btn = QPushButton("Zapisz jako domyślne")
         events = QWidget()
         el = QHBoxLayout(events)
@@ -447,7 +464,7 @@ class CouponsTab(QWidget):
         el.addWidget(self.min_events)
         el.addWidget(label("–"))
         el.addWidget(self.max_events)
-        for w in (self.mode, ):
+        for w in (self.mode, self.estimated):
             w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             w.setMinimumContentsLength(12)
         form = QFormLayout()
@@ -458,16 +475,16 @@ class CouponsTab(QWidget):
         form.addRow("Min. szansa typu", self.min_prob)
         form.addRow("Tryb", self.mode)
         form.addRow("Różnica model–rynek", self.divergence)
+        form.addRow("Kursy szacunkowe (≈)", self.estimated)
         al = QVBoxLayout(self.advanced)
         al.setContentsMargins(0, 0, 0, 0)
         al.addLayout(form)
-        al.addWidget(label("Ligi", "section"))
+        al.addWidget(label("Kraje i ligi (zaznacz kraj, aby wybrać wszystkie jego ligi)", "section", wrap=True))
         al.addWidget(self.leagues)
         al.addWidget(label("Rynki", "section"))
         for cb in self.markets.values():
             al.addWidget(cb)
         al.addWidget(self.low_data)
-        al.addWidget(self.estimated)
         al.addWidget(self.save_defaults_btn)
         self.advanced.setVisible(False)
 
@@ -543,6 +560,7 @@ class CouponsTab(QWidget):
         self.diag_btn.clicked.connect(self.show_diagnosis)
         self.days.valueChanged.connect(self._update_days_label)
         ctx.hub.settings_changed.connect(self.load_settings)
+        ctx.hub.data_changed.connect(lambda: self.load_leagues())    # nowe ligi i mecze po pobraniu danych
         self.load_settings()
 
     # -- ustawienia -------------------------------------------------------------------------------------
@@ -581,23 +599,23 @@ class CouponsTab(QWidget):
         self.mode.setCurrentIndex(0 if c.mode == "probability" else 1)
         self.divergence.setValue(round(c.max_divergence * 100))
         self.low_data.setChecked(c.include_low_data)
-        self.estimated.setChecked(c.allow_estimated_odds)
-        self.leagues.clear()
-        for lg in self.ctx.sync.leagues.all(enabled_only=True):
-            item = QListWidgetItem(lg.name)
-            item.setData(Qt.UserRole, lg.code)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if not c.leagues or lg.code in c.leagues else Qt.Unchecked)
-            self.leagues.addItem(item)
+        self.estimated.setCurrentIndex(max(0, self.estimated.findData(c.estimated_odds)))
+        self.load_leagues(c.leagues)
         for m, cb in self.markets.items():
             cb.setChecked(m in c.markets)
             cb.setEnabled(m in settings.markets_enabled)
 
+    def load_leagues(self, selected: list[str] | None = None) -> None:
+        """Ligi z danymi (aktywne w ustawieniach) – lista budowana z bazy przy każdym odświeżeniu."""
+        keep = selected if selected is not None else (None if self.leagues.all_checked() else
+                                                      self.leagues.checked_codes())
+        rows = [r for r in self.ctx.sync.leagues.with_counts(self.ctx.now()) if r.league.enabled]
+        self.leagues.set_leagues(rows, keep or None)
+
     def current_cfg(self) -> CouponSettings:
         base = self.ctx.settings().coupon
-        leagues = [self.leagues.item(i).data(Qt.UserRole) for i in range(self.leagues.count())
-                   if self.leagues.item(i).checkState() == Qt.Checked]
-        all_leagues = len(leagues) == self.leagues.count()
+        leagues = self.leagues.checked_codes()
+        all_leagues = self.leagues.all_checked()
         return replace(
             base,
             target_odds=self.target.value(), tolerance=self.tolerance.value() / 100,
@@ -608,7 +626,7 @@ class CouponsTab(QWidget):
             min_probability=self.min_prob.value() / 100, mode=self.mode.currentData(),
             max_divergence=self.divergence.value() / 100,
             leagues=[] if all_leagues else leagues, markets=[m for m, cb in self.markets.items() if cb.isChecked()],
-            include_low_data=self.low_data.isChecked(), allow_estimated_odds=self.estimated.isChecked(),
+            include_low_data=self.low_data.isChecked(), estimated_odds=self.estimated.currentData(),
         )
 
     def save_defaults(self) -> None:

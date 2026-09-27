@@ -110,11 +110,17 @@ class Coupon:
     def match_ids(self) -> set[int]:
         return {leg.match.match_id for leg in self.legs}
 
+    @property
+    def estimated_legs(self) -> int:
+        """Liczba typów z kursem szacunkowym – taki kupon jest wyraźnie oznaczony."""
+        return sum(1 for leg in self.legs if leg.selection.estimated)
+
 
 @dataclass
 class GenerationResult:
     coupons: list[Coupon]
     diagnosis: "Diagnosis"
+    estimated_fallback: bool = False    # z prawdziwymi kursami nie dało się – kupony z kursami szacunkowymi
 
 
 @dataclass
@@ -187,6 +193,8 @@ class CouponService:
                 flags.append("beniaminek: " + ", ".join(new))
             if pr.cross_league:
                 flags.append("drużyny z różnych lig – niższa pewność")
+            if pr.method == "Elo":
+                flags.append("prognoza z rankingu Elo (tylko wyniki meczów)")
             info = MatchInfo(mp.match_id, mp.league, mp.kickoff, row["home_team_id"], row["away_team_id"],
                              mp.home, mp.away, pr.lam_home, pr.lam_away, pr.low_data, flags)
             evals = evaluate_match(mp.match_id, pr.probs, self.matches.odds_for_match(mp.match_id), settings, markets)
@@ -203,11 +211,11 @@ class CouponService:
                                (info.home_id, info.away_id))
                      for info, evals in self._evaluated.values() for sel in evals
                      if sel.odds is not None and sel.key[0] in cfg.markets]
-        stages = [("odds", "Z kursami na wybranych rynkach", with_odds)]
+        stages = [("odds", "Z kursem (także szacunkowym) na wybranych rynkach", with_odds)]
         cur = with_odds
-        if not cfg.allow_estimated_odds:
+        if cfg.estimated_odds != "always":
             cur = [c for c in cur if not c.estimated_odds]
-            stages.append(("estimated", "Bez kursów szacunkowych", cur))
+            stages.append(("estimated", "Z prawdziwym kursem bukmachera (bez szacunkowych)", cur))
         cur = [c for c in cur if c.probability >= cfg.min_probability]
         stages.append(("prob", f"Z typem o szansie co najmniej {pct(cfg.min_probability)}", cur))
         if cfg.mode == "value":
@@ -234,16 +242,34 @@ class CouponService:
         cfg = cfg or settings.coupon
         if evaluate or not self._evaluated:
             self.evaluate(cfg)
-        coupons = [self._build(c, cfg) for c in alternatives(self.candidates(cfg), cfg, cfg.alternatives)]
-        return GenerationResult(coupons, diagnose(self, cfg, coupons, secrets=secrets))
+        chosen, used = self._alternatives(cfg)
+        coupons = [self._build(c, used) for c in chosen]
+        fallback = used.estimated_odds == "always" and cfg.estimated_odds == "fallback"
+        diag = diagnose(self, used, coupons, secrets=secrets)
+        if fallback:
+            strict = diagnose(self, replace(cfg, estimated_odds="never"), [], secrets=secrets)
+            why = strict.reasons[0] if strict.reasons else "z prawdziwymi kursami nie da się ułożyć kuponu"
+            diag.notes.insert(0, f"Kupony z kursami szacunkowymi – {why[:1].lower() + why[1:]} "
+                                 "Sprawdź kursy u bukmachera przed zagraniem.")
+        return GenerationResult(coupons, diag, fallback)
+
+    def _alternatives(self, cfg: CouponSettings) -> tuple[list[list[Candidate]], CouponSettings]:
+        """Kupony z prawdziwymi kursami; w trybie 'fallback' – gdy się nie da – z kursami szacunkowymi."""
+        strict = replace(cfg, estimated_odds="never") if cfg.estimated_odds == "fallback" else cfg
+        chosen = alternatives(self.candidates(strict), strict, cfg.alternatives)
+        if chosen or cfg.estimated_odds != "fallback":
+            return chosen, strict
+        loose = replace(cfg, estimated_odds="always")
+        chosen = alternatives(self.candidates(loose), loose, cfg.alternatives)
+        return (chosen, loose) if chosen else ([], strict)
 
     def generate(self, cfg: CouponSettings | None = None, *, evaluate: bool = True) -> list[Coupon]:
         settings = self.settings()
         cfg = cfg or settings.coupon
         if evaluate or not self._evaluated:
             self.evaluate(cfg)
-        coupons = alternatives(self.candidates(cfg), cfg, cfg.alternatives)
-        return [self._build(c, cfg) for c in coupons]
+        chosen, used = self._alternatives(cfg)
+        return [self._build(c, used) for c in chosen]
 
     def _leg(self, match_id: int, key: Key, with_rationale: bool = True) -> CouponLeg:
         info, evals = self._evaluated[match_id]
@@ -299,6 +325,8 @@ class CouponService:
         """Zamienniki dla zdarzenia: inne typy z tego meczu i typy z meczów spoza kuponu – te same filtry co
         generator (zgodność modelu z rynkiem / przewaga, bez tej samej drużyny dwa razy), najlepsze na górze."""
         cfg = cfg or self.settings().coupon
+        if coupon.estimated_legs and cfg.estimated_odds == "fallback":
+            cfg = replace(cfg, estimated_odds="always")     # kupon już ma kursy szacunkowe
         others = [leg for leg in coupon.legs if leg.match.match_id != match_id]
         base = math.prod(leg.selection.odds or 1.0 for leg in others)
         used = {leg.match.match_id for leg in others}

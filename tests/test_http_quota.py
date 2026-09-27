@@ -4,9 +4,9 @@ import pytest
 
 from typerbot.data.errors import QuotaExceededError, SourceUnavailableError
 from typerbot.data.http import HttpClient, HttpResponse
-from typerbot.data.quota import QuotaTracker
+from typerbot.data.quota import QuotaTracker, StatusBoard
 from typerbot.data.ratelimit import RateLimiter
-from typerbot.data.sources import TheOddsApi
+from typerbot.data.sources import OpenLigaDb
 
 
 class ScriptedTransport:
@@ -52,67 +52,47 @@ def test_rate_limiter_block_and_max_wait(clock):
 def test_cache_hit_avoids_network_and_expires(db, clock, secrets):
     transport = ScriptedTransport(ok({"sports": 1}), ok({"sports": 2}))
     http = HttpClient(db, transport, clock)
-    src = TheOddsApi(http, QuotaTracker(db, clock), secrets, limiter=RateLimiter(None), clock=clock)
-    assert src.request("/sports", ttl=60, cost=0) == {"sports": 1}
-    assert src.request("/sports", ttl=60, cost=0) == {"sports": 1}
+    src = OpenLigaDb(http, QuotaTracker(db, clock), limiter=RateLimiter(None), clock=clock)
+    assert src.request("/sports", ttl=60) == {"sports": 1}
+    assert src.request("/sports", ttl=60) == {"sports": 1}
     assert len(transport.calls) == 1
     clock.advance(61)
-    assert src.request("/sports", ttl=60, cost=0) == {"sports": 2}
+    assert src.request("/sports", ttl=60) == {"sports": 2}
     assert len(transport.calls) == 2
-
-
-def test_api_key_not_in_cache_key_or_stored_url(db, clock, secrets):
-    transport = ScriptedTransport(ok([]))
-    http = HttpClient(db, transport, clock)
-    src = TheOddsApi(http, QuotaTracker(db, clock), secrets, limiter=RateLimiter(None), clock=clock)
-    src.request("/sports", ttl=60, cost=0)
-    assert transport.calls[0][1]["apiKey"] == "key-the_odds_api"
-    row = db.query_one("SELECT url FROM http_cache")
-    assert "key-the_odds_api" not in row["url"]
 
 
 def test_offline_falls_back_to_stale_cache(db, clock, secrets):
     transport = ScriptedTransport(ok({"v": 1}), SourceUnavailableError("offline"))
     http = HttpClient(db, transport, clock)
-    src = TheOddsApi(http, QuotaTracker(db, clock), secrets, limiter=RateLimiter(None), clock=clock)
-    src.request("/sports", ttl=10, cost=0)
+    src = OpenLigaDb(http, QuotaTracker(db, clock), limiter=RateLimiter(None), clock=clock)
+    src.request("/sports", ttl=10)
     clock.advance(20)
-    assert src.request("/sports", ttl=10, cost=0) == {"v": 1}
+    assert src.request("/sports", ttl=10) == {"v": 1}
     assert src.last_stale
 
 
 def test_offline_without_cache_raises(db, clock, secrets):
     http = HttpClient(db, ScriptedTransport(SourceUnavailableError("offline")), clock)
-    src = TheOddsApi(http, QuotaTracker(db, clock), secrets, limiter=RateLimiter(None), clock=clock)
+    src = OpenLigaDb(http, QuotaTracker(db, clock), limiter=RateLimiter(None), clock=clock)
     with pytest.raises(SourceUnavailableError):
-        src.request("/sports", ttl=10, cost=0)
+        src.request("/sports", ttl=10)
 
 
-# -- limity z nagłówków ------------------------------------------------------------------
-def test_odds_api_quota_from_headers_and_cost(db, clock, secrets):
-    quota = QuotaTracker(db, clock)
-    transport = ScriptedTransport(ok([], x_requests_remaining=480, x_requests_used=20, x_requests_last=2))
-    src = TheOddsApi(HttpClient(db, transport, clock), quota, secrets, limiter=RateLimiter(None), clock=clock)
-    src.request("/sports/soccer_epl/odds", {"regions": "eu"}, cost=2)
-    info = quota.get("the_odds_api", "month", 500)
-    assert (info.remaining, info.used, info.limit, info.from_headers) == (480, 20, 500, True)
-    assert quota.local_used("the_odds_api", "month") == 2
+# -- stan źródeł ---------------------------------------------------------------------------
+def test_status_board_keeps_last_successful_update(db, clock):
+    board = StatusBoard(db, clock)
+    board.set("openfootball", "ok", "120 rekordów")
+    good = clock()
+    clock.advance(3600)
+    board.set("openfootball", "offline", "brak połączenia")
+    st = board.get("openfootball")
+    assert st.state == "offline" and st.last_ok == good and st.updated_at == good + 3600
 
 
-def test_odds_api_budget_blocks_expensive_call(db, clock, secrets):
-    quota = QuotaTracker(db, clock)
-    quota.update("the_odds_api", "month", remaining=1, used=499)
-    transport = ScriptedTransport()
-    src = TheOddsApi(HttpClient(db, transport, clock), quota, secrets, limiter=RateLimiter(None), clock=clock)
-    with pytest.raises(QuotaExceededError):
-        src.request("/sports/soccer_epl/odds", cost=2)
-    assert transport.calls == []  # nie wysłano zapytania
-
-
-def test_quota_header_info_expires_with_period(db, clock):
-    quota = QuotaTracker(db, clock)
-    quota.update("some_api", "day", limit=100, remaining=5)
-    assert quota.get("some_api", "day", 100).remaining == 5
-    clock.advance(24 * 3600)  # następny dzień – limit dzienny się odnawia
-    info = quota.get("some_api", "day", 100)
-    assert info.remaining == 100 and not info.from_headers
+def test_calls_are_counted_per_day(db, clock):
+    transport = ScriptedTransport(ok([]), ok([]))
+    src = OpenLigaDb(HttpClient(db, transport, clock), QuotaTracker(db, clock), limiter=RateLimiter(None),
+                     clock=clock)
+    src.request("/getmatchdata/bl3/2026")
+    src.request("/getmatchdata/bl1/2026")
+    assert QuotaTracker(db, clock).calls_today("openligadb") == 2

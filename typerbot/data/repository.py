@@ -1,7 +1,7 @@
 """Zapis i odczyt meczów oraz kursów.
 
-Ten sam mecz może przyjść z kilku źródeł (np. terminarz z football-data.org,
-kursy z The Odds API, historia z football-data.co.uk). Łączymy je w jeden
+Ten sam mecz może przyjść z kilku źródeł (np. terminarz z openfootball, kursy
+i wyniki z football-data.co.uk, wyniki na bieżąco z OpenLigaDB). Łączymy je w jeden
 wiersz `matches`, a identyfikatory ze źródeł trzymamy w `match_sources`.
 """
 
@@ -11,7 +11,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from typerbot.config.leagues import DEFAULT_LEAGUES, League
@@ -23,8 +23,9 @@ from typerbot.data.records import (
 from typerbot.data.teams import TeamMatcher
 
 MATCH_WINDOW = timedelta(hours=36)
-# Źródła, których godzina rozpoczęcia jest przybliżona i nie nadpisuje innych.
-APPROXIMATE_KICKOFF_SOURCES = frozenset({"football_data_csv"})
+# Pewność godziny rozpoczęcia według źródła: godzina z pewniejszego źródła nie jest nadpisywana
+# godziną z mniej pewnego (np. terminarz openfootball bywa aktualizowany z opóźnieniem).
+KICKOFF_RANK = {"openligadb": 3, "football_data_csv": 2, "openfootball": 1}
 
 
 @dataclass
@@ -33,8 +34,20 @@ class UpsertResult:
     created: bool
 
 
-_LEAGUE_COLUMNS = ("code", "name", "country", "is_cup", "fd_org_code", "odds_api_key",
-                   "oddspapi_id", "fdcuk_code", "fdcuk_format", "enabled", "sort_order")
+_LEAGUE_COLUMNS = ("code", "name", "country", "is_cup", "fdcuk_code", "fdcuk_format", "enabled", "sort_order",
+                   "openfootball", "openligadb", "season_style", "timezone", "tier", "national")
+# Pola katalogu aktualizowane przy każdym uruchomieniu (identyfikatory w źródłach); nazwa i „aktywna” – nie.
+_SOURCE_COLUMNS = ("country", "is_cup", "fdcuk_code", "fdcuk_format", "openfootball", "openligadb", "season_style",
+                   "timezone", "tier", "national")
+_BOOL_COLUMNS = ("is_cup", "enabled", "national")
+
+
+@dataclass
+class LeagueCounts:
+    league: League
+    upcoming: int        # nadchodzące mecze
+    finished: int        # zakończone mecze z wynikiem (historia do modelu)
+    next_kickoff: str | None
 
 
 class LeagueRepository:
@@ -46,11 +59,16 @@ class LeagueRepository:
         return tuple(int(v) if isinstance(v, bool) else v for v in (getattr(lg, c) for c in _LEAGUE_COLUMNS))
 
     def ensure_defaults(self, leagues: Iterable[League] = DEFAULT_LEAGUES) -> None:
+        leagues = list(leagues)
         cols = ", ".join(_LEAGUE_COLUMNS)
         marks = ", ".join("?" * len(_LEAGUE_COLUMNS))
+        sets = ", ".join(f"{c} = ?" for c in _SOURCE_COLUMNS)
         with self.db.transaction() as conn:
             conn.executemany(f"INSERT OR IGNORE INTO leagues({cols}) VALUES ({marks})",
                              [self._values(lg) for lg in leagues])
+            conn.executemany(f"UPDATE leagues SET {sets} WHERE code = ?",
+                             [tuple(int(v) if isinstance(v, bool) else v for v in
+                                    (getattr(lg, c) for c in _SOURCE_COLUMNS)) + (lg.code,) for lg in leagues])
 
     def all(self, enabled_only: bool = False) -> list[League]:
         sql = "SELECT * FROM leagues" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY sort_order, code"
@@ -68,19 +86,34 @@ class LeagueRepository:
             conn.execute(f"INSERT INTO leagues({cols}) VALUES ({marks}) ON CONFLICT(code) DO UPDATE SET {updates}",
                          self._values(league))
 
+    def add_discovered(self, league: League) -> League:
+        """Liga znaleziona w danych, a nieobecna w katalogu – dopisywana automatycznie (aktywna)."""
+        existing = self.get(league.code)
+        if existing is not None:
+            return existing
+        row = self.db.query_one("SELECT COALESCE(MAX(sort_order), 0) AS n FROM leagues")
+        league = replace(league, sort_order=int(row["n"]) + 1 if row else 100)
+        self.save(league)
+        return league
+
     def set_enabled(self, code: str, enabled: bool) -> None:
         with self.db.transaction() as conn:
             conn.execute("UPDATE leagues SET enabled = ? WHERE code = ?", (int(enabled), code))
 
-    def set_oddspapi_id(self, code: str, tournament_id: int) -> None:
-        with self.db.transaction() as conn:
-            conn.execute("UPDATE leagues SET oddspapi_id = ? WHERE code = ?", (tournament_id, code))
+    def with_counts(self, now: datetime) -> list[LeagueCounts]:
+        """Ligi z liczbą nadchodzących i zakończonych meczów – lista w interfejsie pokazuje ligi z danymi."""
+        up = {r["league_code"]: (r["n"], r["first"]) for r in self.db.query(
+            "SELECT league_code, COUNT(*) AS n, MIN(kickoff) AS first FROM matches WHERE status = ? AND kickoff >= ? "
+            "GROUP BY league_code", (SCHEDULED, to_iso(now)))}
+        done = {r["league_code"]: r["n"] for r in self.db.query(
+            "SELECT league_code, COUNT(*) AS n FROM matches WHERE status = ? AND home_goals IS NOT NULL "
+            "GROUP BY league_code", (FINISHED,))}
+        return [LeagueCounts(lg, up.get(lg.code, (0, None))[0], done.get(lg.code, 0), up.get(lg.code, (0, None))[1])
+                for lg in self.all()]
 
     @staticmethod
     def _to_league(r: sqlite3.Row) -> League:
-        slug = next((lg.oddspapi_slug for lg in DEFAULT_LEAGUES if lg.code == r["code"]), "")
-        return League(**{c: (bool(r[c]) if c in ("is_cup", "enabled") else r[c]) for c in _LEAGUE_COLUMNS},
-                      oddspapi_slug=slug)
+        return League(**{c: (bool(r[c]) if c in _BOOL_COLUMNS else r[c]) for c in _LEAGUE_COLUMNS})
 
 
 class MatchRepository:
@@ -145,12 +178,13 @@ class MatchRepository:
 
     def _upsert(self, conn: sqlite3.Connection, rec: MatchRecord, league: League | None) -> UpsertResult:
         is_cup = bool(league and league.is_cup)
-        country = league.country if league and not is_cup else ""
+        country = league.country if league else ""
         home = self.matcher.resolve(conn, rec.source, rec.league_code, rec.home, hints=rec.home_hints,
                                     is_cup=is_cup, country=country).team_id
         away = self.matcher.resolve(conn, rec.source, rec.league_code, rec.away, hints=rec.away_hints,
                                     is_cup=is_cup, country=country).team_id
         now = to_iso(datetime.now(timezone.utc))
+        rank = KICKOFF_RANK.get(rec.source, 0) if rec.kickoff_exact and rec.status not in FINAL_STATUSES else 0
 
         row = conn.execute(
             "SELECT m.* FROM match_sources s JOIN matches m ON m.id = s.match_id "
@@ -168,11 +202,11 @@ class MatchRepository:
         if row is None:
             cur = conn.execute(
                 "INSERT INTO matches(league_code, season, kickoff, home_team_id, away_team_id, status, "
-                "home_goals, away_goals, home_xg, away_xg, home_shots, away_shots, home_sot, away_sot, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "home_goals, away_goals, home_xg, away_xg, home_shots, away_shots, home_sot, away_sot, updated_at, "
+                "kickoff_rank, neutral) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (rec.league_code, rec.season, rec.kickoff_iso, home, away, rec.status, rec.home_goals,
                  rec.away_goals, rec.home_xg, rec.away_xg, rec.home_shots, rec.away_shots, rec.home_sot,
-                 rec.away_sot, now),
+                 rec.away_sot, now, rank, int(rec.neutral)),
             )
             match_id = int(cur.lastrowid)
             self._link(conn, match_id, rec.source, rec.external_id, rec.extra)
@@ -180,18 +214,18 @@ class MatchRepository:
 
         match_id = int(row["id"])
         status = merge_status(row["status"], rec.status)
-        kickoff = row["kickoff"]
-        if rec.source not in APPROXIMATE_KICKOFF_SOURCES and status not in FINAL_STATUSES | {LIVE}:
-            kickoff = rec.kickoff_iso
+        kickoff, kickoff_rank = row["kickoff"], row["kickoff_rank"]
+        if rank > 0 and rank >= kickoff_rank and status not in FINAL_STATUSES | {LIVE}:
+            kickoff, kickoff_rank = rec.kickoff_iso, rank
         goals_known = rec.home_goals is not None and rec.away_goals is not None
         conn.execute(
-            "UPDATE matches SET status = ?, kickoff = ?, "
+            "UPDATE matches SET status = ?, kickoff = ?, kickoff_rank = ?, "
             "home_goals = CASE WHEN ? THEN ? ELSE home_goals END, "
             "away_goals = CASE WHEN ? THEN ? ELSE away_goals END, "
             "home_xg = COALESCE(?, home_xg), away_xg = COALESCE(?, away_xg), "
             "home_shots = COALESCE(?, home_shots), away_shots = COALESCE(?, away_shots), "
             "home_sot = COALESCE(?, home_sot), away_sot = COALESCE(?, away_sot), updated_at = ? WHERE id = ?",
-            (status, kickoff, goals_known, rec.home_goals, goals_known, rec.away_goals, rec.home_xg,
+            (status, kickoff, kickoff_rank, goals_known, rec.home_goals, goals_known, rec.away_goals, rec.home_xg,
              rec.away_xg, rec.home_shots, rec.away_shots, rec.home_sot, rec.away_sot, now, match_id),
         )
         self._link(conn, match_id, rec.source, rec.external_id, rec.extra)
@@ -346,7 +380,7 @@ class OddsView:
     books: dict[OddsKey, int]
 
     def reference(self, mode: str) -> dict[OddsKey, float]:
-        """Kurs do liczenia EV. Tryb 'bookmaker' (np. Superbet) uzupełnia braki średnią."""
+        """Kurs do liczenia EV. Tryb 'bookmaker' (np. Pinnacle) uzupełnia braki średnią."""
         if mode == "best":
             return dict(self.best)
         if mode == "bookmaker":

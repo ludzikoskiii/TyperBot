@@ -1,8 +1,8 @@
-"""Bezpieczne przechowywanie kluczy API.
+"""Magazyn kluczy API (systemowy magazyn poświadczeń przez bibliotekę `keyring`).
 
-Klucze trafiają do systemowego magazynu poświadczeń przez bibliotekę `keyring`
-(na Windows: Menedżer poświadczeń / Windows Credential Locker). Nigdy nie są
-zapisywane w bazie ani w plikach aplikacji.
+Aplikacja korzysta wyłącznie ze źródeł bez klucza, więc nie zapisuje już żadnych kluczy.
+Moduł służy do jednorazowego usunięcia kluczy z wcześniejszych wersji (źródła usunięte
+z aplikacji) z Menedżera poświadczeń Windows.
 """
 
 from __future__ import annotations
@@ -15,8 +15,9 @@ from typerbot import APP_NAME
 log = logging.getLogger(__name__)
 
 SERVICE = APP_NAME
-KEYED_SOURCES = ("football_data_org", "the_odds_api", "oddspapi")
-REMOVED_SOURCES = ("api_football",)   # źródła usunięte z aplikacji – ich klucze kasujemy z magazynu
+KEYED_SOURCES: tuple[str, ...] = ()   # źródła wymagające klucza – brak
+# Źródła usunięte z aplikacji (wymagały klucza lub miały limity) – ich klucze kasujemy z magazynu.
+REMOVED_SOURCES = ("api_football", "football_data_org", "the_odds_api", "oddspapi")
 
 
 class SecretStoreError(RuntimeError):

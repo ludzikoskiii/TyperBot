@@ -1,10 +1,9 @@
 """Narzędzie wiersza poleceń (interfejs graficzny: python -m typerbot lub python -m typerbot gui).
 
   python -m typerbot demo                 synchronizacja na danych syntetycznych
-  python -m typerbot demo --awaria the_odds_api   (symulacja awarii źródła)
-  python -m typerbot klucz the_odds_api   zapis klucza API w Menedżerze poświadczeń
-  python -m typerbot sync [--force]       pobranie prawdziwych danych
-  python -m typerbot status               zużycie limitów i stan źródeł
+  python -m typerbot demo --awaria openfootball   (symulacja awarii źródła)
+  python -m typerbot sync [--force]       pobranie prawdziwych danych (bez kluczy API)
+  python -m typerbot status               stan źródeł i data ostatnich danych
   python -m typerbot mecze [--dni 3]      nadchodzące mecze z kursami
   python -m typerbot druzyny              dopasowania nazw do sprawdzenia
   python -m typerbot prognozy [--dni 3]   prognozy modelu dla nadchodzących meczów
@@ -18,7 +17,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import logging
 import sys
 import tempfile
@@ -26,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from typerbot.config.secrets import KEYED_SOURCES, MemorySecretStore, SecretStore, default_secret_store, mask
+from typerbot.config.secrets import SecretStore, default_secret_store
 from typerbot.data.db import Database
 from typerbot.data.errors import STATE_LABELS
 from typerbot.data.repository import odds_view
@@ -36,7 +34,7 @@ from typerbot.paths import db_path
 from typerbot.services.sync import SyncReport, SyncService
 
 LOCAL = ZoneInfo("Europe/Warsaw")
-STEP_LABELS = {"history": "historia", "fixtures": "terminarz/wyniki", "odds": "brakujące kursy", "results": "wyniki"}
+STEP_LABELS = {"history": "historia", "fixtures": "terminarz/wyniki", "names": "nazwy klubów"}
 
 
 def _out(text: str = "") -> None:
@@ -59,23 +57,16 @@ def print_report(report: SyncReport) -> None:
 
 
 def print_status(service: SyncService) -> None:
-    _out("Zużycie limitów API")
-    _out(f"  {'Źródło':<22}{'Okres':<9}{'Zużyte':>8}{'Limit':>8}{'Zostało':>9}  {'Dziś zapytań':>12}  Stan")
-    period_pl = {"minute": "minuta", "day": "dzień", "month": "miesiąc", "-": "-"}
-    for q in service.quota_rows():
-        used = "-" if q.used is None else str(q.used)
-        limit = "-" if q.limit is None else str(q.limit)
-        rem = "-" if q.remaining is None else str(q.remaining)
-        label = STATE_LABELS.get(q.state, q.state)
-        state = label + (f" ({q.message})" if q.message and q.state != "ok" and not q.message.startswith(label) else "")
-        src = "nagł." if q.from_headers else "lok."
-        _out(f"  {q.label:<22}{period_pl.get(q.period, q.period):<9}{used:>8}{limit:>8}{rem:>9}  "
-             f"{q.calls_today:>12}  {state} [{src}]")
+    from typerbot.services.diagnostics import when_label
+
+    _out("Źródła danych (wszystkie bez klucza i rejestracji)")
+    _out(f"  {'Źródło':<38}{'Stan':<26}{'Dane z':<14}{'Dziś zapytań':>12}")
+    for row in service.source_rows():
+        label = STATE_LABELS.get(row.state, row.state)
+        state = label + (f" ({row.message})" if row.message and row.state != "ok" and not row.message.startswith(label)
+                         else "")
+        _out(f"  {row.label:<38}{state[:25]:<26}{when_label(row.last_ok):<14}{row.calls_today:>12}")
     _out(f"  Cache: {service.http.cache_hits} trafień, {service.http.network_calls} zapytań sieciowych w tej sesji")
-    _out("\nŹródła z limitem – tylko uzupełnienie brakujących kursów (budżet aplikacji < limit planu):")
-    for e in service.usage_estimates():
-        _out(f"  {e.label:<14} zużyto {e.used_month}/{e.plan_limit} (budżet aplikacji {e.app_limit}), dziś {e.used_today}, "
-             f"maks. {e.daily_allowance}/dzień, szacunek na miesiąc ≈ {e.projected}")
     counts = service.matches.counts()
     _out("\nBaza danych")
     _out(f"  ligi aktywne: {counts['leagues']}, drużyny: {counts['teams']}, mecze: {counts['matches']} "
@@ -95,12 +86,12 @@ def print_matches(service: SyncService, days: int) -> None:
     now = service.now()
     rows = service.matches.matches_between(now - timedelta(hours=2), now + timedelta(days=days))
     settings = service.settings()
-    book = settings.odds.bookmaker.capitalize() or "bukmacher"
-    _out(f"\nNadchodzące mecze ({len(rows)}) – kursy: {book} (średnia rynkowa)")
+    book = settings.odds.reference if settings.odds.reference in ("pinnacle", "bet365") else ""
+    _out(f"\nNadchodzące mecze ({len(rows)}) – kursy: {book.capitalize() or 'najwyższy'} (średnia rynkowa)")
     _out(f"  {'Data':<12}{'Liga':<5}{'Mecz':<42}{'1':>13}{'X':>13}{'2':>13}{'>2.5':>13}{'BTTS tak':>13}")
     keys = [("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0), ("OU", "O", 2.5), ("BTTS", "Y", 0.0)]
     for r in rows:
-        view = odds_view(service.matches.odds_for_match(r["id"]), settings.odds.bookmaker)
+        view = odds_view(service.matches.odds_for_match(r["id"]), book)
         when = datetime.fromisoformat(r["kickoff"].replace("Z", "+00:00")).astimezone(LOCAL).strftime("%d.%m %H:%M")
         match = f"{r['home_name']} – {r['away_name']}"
         _out(f"  {when:<12}{r['league_code']:<5}{match[:41]:<42}" + "".join(f"{_odds_cell(view, k):>13}" for k in keys))
@@ -108,7 +99,8 @@ def print_matches(service: SyncService, days: int) -> None:
 
 def _odds_cell(view, key) -> str:
     """„kurs bukmachera (średnia rynkowa)”."""
-    b = f"{view.bookmaker[key]:.2f}" if key in view.bookmaker else "–"
+    price = view.bookmaker.get(key) or view.best.get(key)
+    b = f"{price:.2f}" if price else "–"
     a = f"({view.average[key]:.2f})" if key in view.average else "(–)"
     return f"{b} {a}"
 
@@ -157,10 +149,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
     transport = DemoTransport(world, fail=set(args.awaria or []))
     tmp = Path(tempfile.mkdtemp(prefix="typerbot-demo-"))
     db = Database(tmp / "demo.db")
-    secrets = MemorySecretStore({s: "demo-key-1234" for s in KEYED_SOURCES})
-    service = SyncService(db, secrets, transport=transport, now=lambda: now, rate_limits=False)
-    for league in service.leagues.all():
-        service.leagues.set_enabled(league.code, league.code in ("PL", "EKS"))
+    service = SyncService(db, transport=transport, now=lambda: now, rate_limits=False)
+    world.enable_leagues(service.leagues)
     _out(f"TRYB DEMO – dane syntetyczne, baza tymczasowa: {tmp / 'demo.db'}")
     if args.awaria:
         _out(f"Symulowana awaria: {', '.join(args.awaria)}")
@@ -188,21 +178,6 @@ def _real_service(secrets: SecretStore | None = None) -> SyncService:
     return SyncService(Database(db_path()), secrets or default_secret_store())
 
 
-def cmd_key(args: argparse.Namespace) -> int:
-    store = default_secret_store()
-    if args.usun:
-        store.delete(args.zrodlo)
-        _out(f"Usunięto klucz {args.zrodlo}.")
-        return 0
-    value = getpass.getpass(f"Klucz API dla {SOURCE_LABELS[args.zrodlo]} (nie będzie widoczny): ").strip()
-    if not value:
-        _out("Nie podano klucza.")
-        return 1
-    store.set(args.zrodlo, value)
-    _out(f"Zapisano klucz {mask(value)} w magazynie systemowym.")
-    return 0
-
-
 def cmd_sync(args: argparse.Namespace) -> int:
     service = _real_service()
     report = service.run_all(force=args.force)
@@ -213,10 +188,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    service = _real_service()
-    store = service.secrets
-    _out("Klucze API: " + ", ".join(f"{SOURCE_LABELS[s]}: {mask(store.get(s))}" for s in KEYED_SOURCES) + "\n")
-    print_status(service)
+    print_status(_real_service())
     return 0
 
 
@@ -395,7 +367,7 @@ def _add_backtest_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--kurs", type=float, help="kurs docelowy kuponu")
     p.add_argument("--prog", type=float, default=0.0, help="minimalna przewaga typu value, np. 0.05")
     p.add_argument("--obnizka", type=float, default=0.0,
-                   help="obniżka kursów względem średniej rynkowej, np. 0.03 (wyższa marża Superbet)")
+                   help="obniżka kursów względem średniej rynkowej, np. 0.03 (wyższa marża polskiego bukmachera)")
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
@@ -409,25 +381,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd")
 
     p = sub.add_parser("gui", help="interfejs graficzny (to samo co uruchomienie bez argumentów)")
-    p.add_argument("--demo", action="store_true", help="tryb demo – dane syntetyczne, bez kluczy")
+    p.add_argument("--demo", action="store_true", help="tryb demo – dane syntetyczne, bez internetu")
     p.set_defaults(func=cmd_gui)
 
-    p = sub.add_parser("demo", help="synchronizacja na danych syntetycznych (bez kluczy i internetu)")
+    p = sub.add_parser("demo", help="synchronizacja na danych syntetycznych (bez internetu)")
     p.add_argument("--awaria", action="append", choices=list(SOURCE_LABELS), help="symuluj awarię źródła")
     p.add_argument("--backtest", action="store_true", help="uruchom też backtest modelu na danych demo")
     _add_backtest_args(p)
     p.set_defaults(func=cmd_demo)
 
-    p = sub.add_parser("klucz", help="zapisz lub usuń klucz API")
-    p.add_argument("zrodlo", choices=list(KEYED_SOURCES))
-    p.add_argument("--usun", action="store_true")
-    p.set_defaults(func=cmd_key)
-
     p = sub.add_parser("sync", help="pobierz dane z prawdziwych źródeł")
     p.add_argument("--force", action="store_true", help="pomiń cache")
     p.set_defaults(func=cmd_sync)
 
-    p = sub.add_parser("status", help="limity API i stan źródeł")
+    p = sub.add_parser("status", help="stan źródeł i data ostatnich danych")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("mecze", help="nadchodzące mecze z kursami")

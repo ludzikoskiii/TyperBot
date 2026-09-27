@@ -118,6 +118,7 @@ class SourceState:
     state: str
     message: str
     updated_at: float
+    last_ok: float | None = None      # ostatnia udana aktualizacja (dane w bazie są z tej chwili)
 
 
 class StatusBoard:
@@ -126,20 +127,22 @@ class StatusBoard:
         self.clock = clock
 
     def set(self, source: str, state: str, message: str = "") -> None:
+        now = self.clock()
         with self.db.transaction() as conn:
             conn.execute(
-                "INSERT INTO source_status(source, state, message, updated_at) VALUES (?, ?, ?, ?) "
+                "INSERT INTO source_status(source, state, message, updated_at, last_ok) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(source) DO UPDATE SET state = excluded.state, message = excluded.message, "
-                "updated_at = excluded.updated_at",
-                (source, state, message, self.clock()),
+                "updated_at = excluded.updated_at, last_ok = COALESCE(excluded.last_ok, last_ok)",
+                (source, state, message, now, now if state == "ok" else None),
             )
+
+    @staticmethod
+    def _state(r) -> SourceState:
+        return SourceState(r["source"], r["state"], r["message"], r["updated_at"], r["last_ok"])
 
     def get(self, source: str) -> SourceState | None:
         row = self.db.query_one("SELECT * FROM source_status WHERE source = ?", (source,))
-        return SourceState(row["source"], row["state"], row["message"], row["updated_at"]) if row else None
+        return self._state(row) if row else None
 
     def all(self) -> dict[str, SourceState]:
-        return {
-            r["source"]: SourceState(r["source"], r["state"], r["message"], r["updated_at"])
-            for r in self.db.query("SELECT * FROM source_status")
-        }
+        return {r["source"]: self._state(r) for r in self.db.query("SELECT * FROM source_status")}

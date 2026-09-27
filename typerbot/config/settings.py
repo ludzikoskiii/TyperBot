@@ -15,7 +15,7 @@ from typerbot.data.db import Database
 
 MARKETS = ("1X2", "DC", "OU", "BTTS")
 
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 
 # Wersja 2: wartości domyślne po kalibracji modelu (README, „Kalibracja modelu”). Zapisane ustawienia
 # z wersji 1 przenosimy tylko wtedy, gdy użytkownik zostawił starą wartość domyślną – własnych nie ruszamy.
@@ -28,6 +28,11 @@ _V2_CHANGES: dict[tuple[str, str], tuple[Any, Any]] = {
     ("coupon", "max_events"): (6, 4),
     ("coupon", "min_probability"): (0.55, 0.40),
 }
+# Wersja 3: tylko źródła bez klucza – mniej sezonów historii na start (38 lig zamiast 7).
+_V3_CHANGES: dict[tuple[str, str], tuple[Any, Any]] = {
+    ("sync", "csv_seasons"): (10, 8),
+}
+ESTIMATED_MODES = ("fallback", "always", "never")
 
 
 @dataclass
@@ -44,6 +49,9 @@ class ModelSettings:
     max_goals: int = 10
     model_weight: float = 0.0         # udział modelu w prognozie; reszta to rynek (kursy bez marży) –
     #                                   backtest: każdy udział modelu > 0 pogarszał prognozę
+    elo_weight: float = 0.5           # udział rankingu Elo w modelu, gdy drużyny mają pełne dane (reszta: Dixon-Coles);
+    #                                   przy małej liczbie danych model opiera się na Elo
+    elo_k: float = 20.0               # szybkość zmian rankingu Elo po meczu
 
 
 @dataclass
@@ -54,11 +62,9 @@ class TaxSettings:
 
 @dataclass
 class OddsSettings:
-    region: str = "eu"                # region bukmacherów w The Odds API
-    reference: str = "bookmaker"      # kurs do EV: 'bookmaker' (z uzupełnieniem średnią) | 'average' | 'best'
-    bookmaker: str = "superbet"       # bukmacher referencyjny (OddsPapi)
+    reference: str = "average"        # kurs do oceny typów: 'average' (średnia rynkowa) | 'best' | 'pinnacle' | 'bet365'
     margin_method: str = "shin"       # 'proportional' | 'shin' – Shin lepiej ujmuje przewagę faworytów
-    cache_hours: float = 6.0
+    estimated_margin: float = 0.07    # typowa marża bukmachera – kurs szacunkowy = 1 / (prawdopodobieństwo × 1,07)
 
 
 @dataclass
@@ -70,8 +76,9 @@ class CouponSettings:
     min_probability: float = 0.40
     mode: str = "probability"         # 'probability' (najwyższa szansa) | 'value' (tylko typy z przewagą)
     max_divergence: float = 0.08      # tryb 'probability': maks. różnica model − rynek (8 pkt proc.)
-    allow_estimated_odds: bool = False  # kursy szacunkowe na kuponie – backtest: typy na szacowanych kursach
-    #                                     trafiały rzadziej, niż zapowiadały
+    estimated_odds: str = "fallback"  # kursy szacunkowe na kuponie: 'fallback' (tylko gdy z prawdziwymi kursami
+    #                                   kuponu nie da się ułożyć) | 'always' | 'never'; backtest: typy na kursach
+    #                                   szacunkowych trafiały rzadziej, niż zapowiadały
     date_range: str = "days"          # 'today' | 'tomorrow' | 'days' (najbliższe X dni) | 'custom'
     days_ahead: int = 3
     date_from: str = ""               # zakres własny (RRRR-MM-DD), gdy date_range == 'custom'
@@ -85,11 +92,11 @@ class CouponSettings:
 
 @dataclass
 class SyncSettings:
-    fixtures_every_hours: float = 3.0     # odświeżanie terminarza i wyników (źródła bez limitu miesięcznego)
-    csv_seasons: int = 10                 # ile sezonów historii z football-data.co.uk (model i backtest)
-    odds_horizon_days: int = 3            # brakujące kursy uzupełniamy dla meczów z najbliższych X dni
-    odds_api_monthly_budget: int = 400    # ile z 500 kredytów The Odds API może zużyć aplikacja
-    oddspapi_monthly_budget: int = 200    # ile z 250 zapytań OddsPapi może zużyć aplikacja
+    fixtures_every_hours: float = 3.0     # odświeżanie terminarza i wyników
+    csv_seasons: int = 8                  # ile sezonów historii z football-data.co.uk (model, Elo, backtest)
+    openfootball: bool = True             # terminarz z wyprzedzeniem (openfootball)
+    openligadb: bool = True               # ligi niemieckie na bieżąco (OpenLigaDB)
+    international: bool = True            # reprezentacje (international_results)
 
 
 @dataclass
@@ -120,12 +127,23 @@ class Settings:
 def migrate(data: dict[str, Any]) -> bool:
     """Przenosi zapisane ustawienia do bieżącej wersji (w miejscu). Zwraca True, gdy coś zmieniono."""
     version = data.get("version", 1)
-    if isinstance(version, int) and version >= SETTINGS_VERSION:
+    if not isinstance(version, int):
+        version = 1
+    if version >= SETTINGS_VERSION:
         return False
-    for (section, name), (old, new) in _V2_CHANGES.items():
-        part = data.get(section)
-        if isinstance(part, dict) and name in part and _same(part[name], old):
-            part[name] = new
+    for since, changes in ((2, _V2_CHANGES), (3, _V3_CHANGES)):
+        if version >= since:
+            continue
+        for (section, name), (old, new) in changes.items():
+            part = data.get(section)
+            if isinstance(part, dict) and name in part and _same(part[name], old):
+                part[name] = new
+    if version < 3:
+        coupon, odds = data.get("coupon"), data.get("odds")
+        if isinstance(coupon, dict) and "allow_estimated_odds" in coupon:
+            coupon["estimated_odds"] = "always" if coupon.pop("allow_estimated_odds") else "fallback"
+        if isinstance(odds, dict) and odds.get("reference") == "bookmaker":
+            odds["reference"] = "average"        # bukmacher referencyjny był z OddsPapi (usunięte)
     data["version"] = SETTINGS_VERSION
     return True
 

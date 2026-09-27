@@ -7,10 +7,10 @@ Nie wymaga klucza ani rejestracji i nie ma limitu zapytań. Pliki:
   * 'extra' – jeden plik ze wszystkimi sezonami: /new/POL.csv (np. Ekstraklasa),
               tylko kursy zamknięcia 1X2;
   * /fixtures.csv – nadchodzące mecze lig 'main' z kursami (1X2, powyżej/poniżej 2,5),
-    aktualizowany zwykle 2 razy w tygodniu (przed weekendem i przed kolejką w tygodniu);
-  * /new_league_fixtures.csv – nadchodzące mecze lig 'extra' z kursami 1X2
-    (aktualizowany rzadziej – brakujące mecze uzupełniają inne źródła).
-Liga Mistrzów nie jest objęta plikami.
+  * /new_league_fixtures.csv – nadchodzące mecze lig 'extra' z kursami 1X2;
+    oba pliki są aktualizowane w piątek po południu (mecze weekendowe) i we wtorek po południu
+    (mecze w środku tygodnia) – wcześniej terminarz dają openfootball i OpenLigaDB.
+Ligi z plików z terminarzem, których nie ma w katalogu, są dopisywane automatycznie.
 Opis kolumn: https://www.football-data.co.uk/notes.txt
 """
 
@@ -21,7 +21,9 @@ import io
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from typerbot.config.leagues import League, season_of
+from collections.abc import Callable
+
+from typerbot.config.leagues import League
 from typerbot.data.errors import SourceError
 from typerbot.data.http import HttpResponse
 from typerbot.data.records import FINISHED, MARKET_1X2, MARKET_OU, SCHEDULED, MatchRecord, OddsQuote
@@ -88,7 +90,7 @@ class FootballDataCsv(ApiSource):
     label = "football-data.co.uk"
     base_url = "https://www.football-data.co.uk"
     requires_key = False
-    per_minute = 20
+    per_minute = 30
 
     def decode(self, resp: HttpResponse) -> str:
         return resp.text()
@@ -118,19 +120,16 @@ class FootballDataCsv(ApiSource):
         text = self.request(f"/new/{league.fdcuk_code}.csv", ttl=ttl)
         return parse_extra(text, league, seasons, self.name)
 
-    def upcoming_main(self, leagues: list[League], now: datetime, *, ttl: float) -> list[MatchRecord]:
-        """Nadchodzące mecze lig 'main' z kursami (jeden plik dla wszystkich lig)."""
-        wanted = [lg for lg in leagues if lg.fdcuk_format == "main" and lg.fdcuk_code]
-        if not wanted:
-            return []
-        return parse_fixtures_main(self.request("/fixtures.csv", ttl=ttl), wanted, now, self.name)
+    def upcoming_main(self, resolve: Callable[[str], League | None], now: datetime, *,
+                      ttl: float) -> list[MatchRecord]:
+        """Nadchodzące mecze lig 'main' z kursami (jeden plik dla wszystkich lig).
+        `resolve(kod pliku)` zwraca ligę (także nową, dopisaną automatycznie) albo None (pomiń)."""
+        return parse_fixtures_main(self.request("/fixtures.csv", ttl=ttl), resolve, now, self.name)
 
-    def upcoming_extra(self, leagues: list[League], now: datetime, *, ttl: float) -> list[MatchRecord]:
-        """Nadchodzące mecze lig 'extra' (np. Ekstraklasa) z kursami 1X2."""
-        wanted = [lg for lg in leagues if lg.fdcuk_format == "extra" and lg.fdcuk_code]
-        if not wanted:
-            return []
-        return parse_fixtures_extra(self.request("/new_league_fixtures.csv", ttl=ttl), wanted, now, self.name)
+    def upcoming_extra(self, resolve: Callable[[str, str], League | None], now: datetime, *,
+                       ttl: float) -> list[MatchRecord]:
+        """Nadchodzące mecze lig 'extra' (np. Ekstraklasa) z kursami 1X2; `resolve(kraj, liga)`."""
+        return parse_fixtures_extra(self.request("/new_league_fixtures.csv", ttl=ttl), resolve, now, self.name)
 
 
 # -- parsowanie -------------------------------------------------------------------
@@ -267,7 +266,7 @@ def parse_extra(text: str, league: League, seasons: set[int] | None,
 # -- nadchodzące mecze ------------------------------------------------------------------
 def _fixture_record(league: League, kickoff: datetime, home: str, away: str, odds: list[OddsQuote],
                     source: str) -> MatchRecord:
-    season = season_of(kickoff.year, kickoff.month)
+    season = league.season_at(kickoff)
     return MatchRecord(
         source=source,
         external_id=_external_id(league, season, kickoff, home, away),   # ten sam id co w pliku z wynikami
@@ -281,12 +280,20 @@ def _fixture_record(league: League, kickoff: datetime, home: str, away: str, odd
     )
 
 
-def parse_fixtures_main(text: str, leagues: list[League], now: datetime,
+def _resolver(leagues: list[League] | Callable, key: Callable[[League], str]) -> Callable:
+    if callable(leagues):
+        return leagues
+    index = {key(lg).lower(): lg for lg in leagues}
+    return lambda *names: next((index[n.lower()] for n in names if n and n.lower() in index), None)
+
+
+def parse_fixtures_main(text: str, leagues: list[League] | Callable[[str], League | None], now: datetime,
                         source: str = "football_data_csv") -> list[MatchRecord]:
-    by_code = {lg.fdcuk_code: lg for lg in leagues}
+    resolve = _resolver(leagues, lambda lg: lg.fdcuk_code or "")
     out = []
     for row in _rows(text):
-        league = by_code.get(row.get("Div", ""))
+        div = row.get("Div", "")
+        league = resolve(div) if div else None
         home, away = row.get("HomeTeam", ""), row.get("AwayTeam", "")
         kickoff = _parse_date(row.get("Date", ""), row.get("Time", ""))
         if league is None or not home or not away or kickoff is None or kickoff < now - FIXTURES_PAST_TOLERANCE:
@@ -297,14 +304,13 @@ def parse_fixtures_main(text: str, leagues: list[League], now: datetime,
     return out
 
 
-def parse_fixtures_extra(text: str, leagues: list[League], now: datetime,
+def parse_fixtures_extra(text: str, leagues: list[League] | Callable[[str, str], League | None], now: datetime,
                          source: str = "football_data_csv") -> list[MatchRecord]:
-    by_country = {EXTRA_COUNTRIES.get(lg.fdcuk_code or "", lg.country).lower(): lg for lg in leagues}
-    by_code = {(lg.fdcuk_code or "").lower(): lg for lg in leagues}
+    resolve = _resolver(leagues, lambda lg: EXTRA_COUNTRIES.get(lg.fdcuk_code or "", lg.fdcuk_code or ""))
     out = []
     for row in _rows(text):
-        country = row.get("Country", "").strip().lower()
-        league = by_country.get(country) or by_code.get(country)
+        country = row.get("Country", "").strip()
+        league = resolve(country, row.get("League", "").strip()) if country else None
         home, away = row.get("Home", "") or row.get("HomeTeam", ""), row.get("Away", "") or row.get("AwayTeam", "")
         kickoff = _parse_date(row.get("Date", ""), row.get("Time", ""))
         if league is None or not home or not away or kickoff is None or kickoff < now - FIXTURES_PAST_TOLERANCE:

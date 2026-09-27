@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QMainWindow, QPushButton, QTa
 from typerbot import __version__
 from typerbot.data.errors import STATE_LABELS
 from typerbot.fmt import plural
-from typerbot.services.diagnostics import sync_problems
+from typerbot.services.diagnostics import sync_problems, when_label
 from typerbot.services.sync import SyncReport
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
@@ -21,8 +21,9 @@ from typerbot.ui.tab_settings import SettingsTab
 from typerbot.ui.widgets import label
 from typerbot.ui.workers import run_in_background
 
-STATE_COLORS = {"ok": theme.POSITIVE, "idle": theme.MUTED, "offline": theme.WARNING, "plan": theme.WARNING,
-                "quota": theme.NEGATIVE, "no_key": theme.MUTED, "auth": theme.NEGATIVE, "error": theme.NEGATIVE}
+STATE_COLORS = {"ok": theme.POSITIVE, "idle": theme.MUTED, "offline": theme.WARNING, "error": theme.NEGATIVE,
+                "disabled": theme.MUTED}
+STATUS_SOURCES = ("football_data_csv", "openfootball", "openligadb", "international")   # na pasku stanu
 
 
 class MainWindow(QMainWindow):
@@ -85,17 +86,17 @@ class MainWindow(QMainWindow):
         self._update_problems()
 
     def start(self) -> None:
-        """Pierwsze odświeżenie po otwarciu okna (w tle) – działa bez kluczy (football-data.co.uk)."""
+        """Pierwsze odświeżenie po otwarciu okna (w tle) – wszystkie źródła bez klucza."""
         self.refresh()
 
     def _update_banner(self) -> None:
         if self.ctx.demo:
             self.banner_text.setText("Tryb demo: dane syntetyczne i tymczasowa baza. Kupony zapisane w tym trybie "
-                                     "znikną po zamknięciu. Prawdziwe dane: uruchom bez --demo (klucze API są opcjonalne).")
+                                     "znikną po zamknięciu. Prawdziwe dane: uruchom bez --demo (bez kluczy API).")
             self.banner.show()
-        elif not self.ctx.has_any_key() and not self.ctx.sync.matches.counts()["matches"]:
-            self.banner_text.setText("Kliknij „Odśwież dane” – główne źródło (football-data.co.uk) nie wymaga klucza. "
-                                     "Darmowe klucze w „Ustawieniach” są opcjonalne i uzupełniają dane.")
+        elif not self.ctx.sync.matches.counts()["matches"]:
+            self.banner_text.setText("Kliknij „Odśwież dane” – wszystkie źródła są darmowe i nie wymagają klucza ani "
+                                     "rejestracji. Pierwsze pobieranie (historia 38 lig) trwa kilka minut.")
             self.banner.show()
         else:
             self.banner.hide()
@@ -113,20 +114,16 @@ class MainWindow(QMainWindow):
 
     def _update_sources(self) -> None:
         parts, tips = [], []
-        periods = {"day": "dziś", "month": "w tym mies."}
-        for q in self.ctx.sync.quota_rows():
-            color = STATE_COLORS.get(q.state, theme.MUTED)
-            # Pokazujemy zużycie („zużyto 12/500”) – limity minutowe pomijamy, bo nic nie mówią.
-            used = q.used if q.used is not None else (q.limit - q.remaining if q.limit and q.remaining is not None
-                                                      else None)
-            limit = (f"zużyto {used}/{q.limit} {periods[q.period]}"
-                     if q.limit and used is not None and q.period in periods else "")
-            parts.append(f"<span style='color:{color}'>●</span> {q.label}" + (f" <small>{limit}</small>" if limit else ""))
-            tips.append(f"{q.label}: {STATE_LABELS.get(q.state, q.state)}"
-                        + (f" – {q.message}" if q.message else "")
-                        + (f" · zużyto {used} z {q.limit}, zostało {q.remaining} ({periods.get(q.period, q.period)})"
-                           if q.limit and used is not None else ""))
-        self.sources_label.setText("  ".join(parts))
+        for row in self.ctx.sync.source_rows():
+            if row.source not in STATUS_SOURCES or not row.enabled:
+                continue
+            color = STATE_COLORS.get(row.state, theme.MUTED)
+            parts.append(f"<span style='color:{color}'>●</span> {row.label.split(' (')[0]}")
+            tips.append(f"{row.label}: {STATE_LABELS.get(row.state, row.state)}"
+                        + (f" – {row.message}" if row.message and row.state != "ok" else "")
+                        + f" · dane z: {when_label(row.last_ok)} · {row.role}")
+        as_of = self.ctx.sync.data_as_of()
+        self.sources_label.setText("  ".join(parts) + f"  <small>dane z: {when_label(as_of)}</small>")
         self.sources_label.setToolTip("\n".join(tips))
 
     def _update_problems(self) -> None:

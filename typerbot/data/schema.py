@@ -238,4 +238,36 @@ MIGRATIONS.append(
     """
 )
 
+# --- v6: wyłącznie źródła bez klucza (football-data.co.uk, openfootball, OpenLigaDB, reprezentacje) -------
+MIGRATIONS.append(
+    """
+    ALTER TABLE leagues ADD COLUMN openfootball TEXT;
+    ALTER TABLE leagues ADD COLUMN openligadb TEXT;
+    ALTER TABLE leagues ADD COLUMN season_style TEXT NOT NULL DEFAULT 'split';
+    ALTER TABLE leagues ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Europe/London';
+    ALTER TABLE leagues ADD COLUMN tier INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE leagues ADD COLUMN national INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE source_status ADD COLUMN last_ok REAL;
+    ALTER TABLE matches ADD COLUMN kickoff_rank INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE matches ADD COLUMN neutral INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE predictions ADD COLUMN method TEXT NOT NULL DEFAULT '';
+    UPDATE source_status SET last_ok = updated_at WHERE state = 'ok';
+
+    CREATE TABLE club_names (
+        country   TEXT NOT NULL,
+        variant   TEXT NOT NULL,
+        canonical TEXT NOT NULL,
+        PRIMARY KEY (country, variant)
+    );
+
+    DELETE FROM source_status WHERE source IN ('football_data_org', 'the_odds_api', 'oddspapi');
+    DELETE FROM api_quota WHERE source IN ('football_data_org', 'the_odds_api', 'oddspapi');
+    DELETE FROM http_cache WHERE source IN ('football_data_org', 'the_odds_api', 'oddspapi');
+    DELETE FROM history_files WHERE source IN ('football_data_org', 'the_odds_api', 'oddspapi');
+    DELETE FROM api_calls WHERE source IN ('football_data_org', 'the_odds_api', 'oddspapi');
+    DELETE FROM settings WHERE key = 'meta.last_sync' OR key LIKE 'meta.daily.%' OR key LIKE 'meta.oddspapi%'
+        OR key LIKE 'meta.papi_fixtures%';
+    """
+)
+
 SCHEMA_VERSION = len(MIGRATIONS)

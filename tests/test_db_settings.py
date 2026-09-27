@@ -33,8 +33,9 @@ def test_settings_roundtrip_and_defaults(db):
     store = SettingsStore(db)
     s = store.load()
     assert s.tax.stake_tax == 0.12 and not s.tax.bookmaker_pays_tax and not hasattr(s, 'budget')
-    assert s.odds.bookmaker == "superbet" and s.odds.reference == "bookmaker"
-    assert s.sync.csv_seasons == 10 and s.sync.odds_api_monthly_budget < 500 and s.sync.oddspapi_monthly_budget < 250
+    assert s.odds.reference == "average" and s.odds.estimated_margin == 0.07 and not hasattr(s.odds, "bookmaker")
+    assert s.sync.csv_seasons == 8 and s.sync.openfootball and s.sync.openligadb and s.sync.international
+    assert s.coupon.estimated_odds == "fallback" and not hasattr(s.sync, "odds_api_monthly_budget")
     s.coupon.target_odds = 7.5
     s.model.last_matches = 12
     store.save(s)
@@ -64,6 +65,18 @@ def test_old_settings_get_calibrated_defaults_once(db):
     s.model.last_matches = 20          # po migracji wybór użytkownika jest trwały
     store.save(s)
     assert store.load().model.last_matches == 20
+
+
+def test_settings_v2_migrate_to_keyless_sources(db):
+    old = json.loads(Settings().to_json())
+    old["version"] = 2
+    old["odds"].update(reference="bookmaker", bookmaker="superbet", region="eu")
+    old["coupon"].pop("estimated_odds")
+    old["coupon"]["allow_estimated_odds"] = True
+    old["sync"].update(csv_seasons=10, odds_api_monthly_budget=400)
+    db.execute("INSERT INTO settings(key, value) VALUES('app', ?)", (json.dumps(old),))
+    s = SettingsStore(db).load()
+    assert s.odds.reference == "average" and s.coupon.estimated_odds == "always" and s.sync.csv_seasons == 8
 
 
 def test_secret_store_and_mask():

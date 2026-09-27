@@ -47,7 +47,8 @@ def print_selections(service: CouponService, cfg: CouponSettings, only_value: bo
     settings = service.settings()
     evaluated = service.evaluate(cfg)
     w = settings.model.model_weight
-    ref = settings.odds.bookmaker.capitalize() if settings.odds.reference == "bookmaker" else settings.odds.reference
+    ref = {"average": "średnia rynkowa", "best": "najwyższy"}.get(settings.odds.reference,
+                                                                  settings.odds.reference.capitalize())
     _out(f"Ocena typów – {len(evaluated)} meczów. Prognoza = {w:.0%} model + {1 - w:.0%} rynek; "
          f"kurs referencyjny: {ref} (gdy brak – średnia). ★ = value (prognoza·kurs > 1, przed podatkiem).")
     for info, evals in sorted(evaluated.values(), key=lambda x: x[0].kickoff):

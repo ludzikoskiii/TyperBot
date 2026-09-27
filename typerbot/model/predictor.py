@@ -1,4 +1,10 @@
-"""Dopasowany model i prognozy dla pojedynczych meczów."""
+"""Dopasowany model i prognozy dla pojedynczych meczów.
+
+  * FittedModel – Dixon-Coles (siła ataku i obrony z bramek, okno ostatnich meczów),
+  * HybridModel – Dixon-Coles połączony z rankingiem Elo: gdy obie drużyny mają pełne dane,
+    prognoza to mieszanka obu modeli (udział Elo w ustawieniach, dobrany backtestem); gdy drużyna
+    ma mało meczów w oknie Dixona-Colesa, a dłuższą historię wyników – sam Elo; reprezentacje – Elo.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +15,8 @@ import numpy as np
 
 from typerbot.config.settings import ModelSettings
 from typerbot.model import dixon_coles as dc
-from typerbot.model.data import OTHER_GROUP, MatchTable, TeamInfo, Window, build_window
+from typerbot.model.data import OTHER_GROUP, MatchTable, TeamInfo, Window, build_window, to_days
+from typerbot.model.elo import EloModel, EloTable
 from typerbot.model.markets import Key, market_probabilities, most_likely_score
 
 
@@ -29,6 +36,9 @@ class Prediction:
     cross_league: bool = False       # drużyny z różnych lig – siła przeliczona współczynnikiem ligi
     likely_score: tuple[int, int, float] = (0, 0, 0.0)
     matrix: np.ndarray | None = field(default=None, repr=False)
+    method: str = "Dixon-Coles"      # 'Dixon-Coles' | 'Elo' | 'Dixon-Coles + Elo'
+    elo_home: float | None = None
+    elo_away: float | None = None
 
     @property
     def low_data(self) -> bool:
@@ -139,3 +149,89 @@ class FittedModel:
             "league_strength": {g: round(float(self.params.group[i]), 3) for g, i in self.group_index.items()},
             "converged": self.params.converged,
         }
+
+
+ELO_MIN_MATCHES = 10          # tyle meczów w historii wystarczy, żeby ranking Elo był wiarygodny
+LEAGUE_MIN_MATCHES = 60       # liga z mniejszą liczbą meczów w historii – „mało danych”
+
+
+class HybridModel:
+    """Dixon-Coles + ranking Elo (także dla drużyn i lig, o których są tylko wyniki)."""
+
+    def __init__(self, dc_model: FittedModel | None, elo: EloModel, settings: ModelSettings,
+                 national: set[str] = frozenset(), league_matches: dict[str, int] | None = None):
+        self.dc, self.elo, self.settings = dc_model, elo, settings
+        self.national = set(national)
+        self.league_matches = league_matches or {}
+
+    @classmethod
+    def fit(cls, table: MatchTable, cutoff: datetime | float, settings: ModelSettings,
+            elo_table: EloTable | None = None, previous: "HybridModel | None" = None) -> "HybridModel | None":
+        if len(table) == 0:
+            return None
+        cut = cutoff if isinstance(cutoff, float) else to_days(cutoff)
+        elo_table = elo_table or EloTable.build(table, settings.elo_k)
+        clubs = table if table.national is None else table.subset(~table.national)
+        dc_model = FittedModel.fit(clubs, cut, settings, previous=previous.dc if previous else None) \
+            if len(clubs) else None
+        rho = dc_model.params.rho if dc_model is not None and settings.dixon_coles else 0.0
+        elo = EloModel.fit(table, elo_table, cut, rho=rho)
+        end = int(np.searchsorted(table.t, cut, side="left"))
+        codes, counts = np.unique(table.league[:end].astype(str), return_counts=True) if end else ([], [])
+        national = set(table.league[table.national].tolist()) if table.national is not None else set()
+        return cls(dc_model, elo, settings, national, dict(zip(codes, (int(c) for c in counts))))
+
+    @property
+    def window(self) -> Window | None:
+        return self.dc.window if self.dc else None
+
+    def team_info(self, team_id: int) -> TeamInfo | None:
+        return self.dc.team_info(team_id) if self.dc else None
+
+    def team_matches(self, team_id: int) -> int:
+        info = self.team_info(team_id)
+        return max(info.n_window if info else 0, self.elo.team(team_id).matches)
+
+    def predict(self, home_id: int, away_id: int, league: str, ou_lines: tuple[float, ...] = (2.5,),
+                keep_matrix: bool = False, neutral: bool = False) -> Prediction:
+        eh, ea = self.elo.team(home_id), self.elo.team(away_id)
+        lh_e, la_e = self.elo.expected_goals(eh, ea, league, neutral)
+        rho = self.elo.rho if self.settings.dixon_coles else 0.0
+        m_elo = dc.score_matrix(lh_e, la_e, rho, self.settings.max_goals)
+        thin_league = self.league_matches.get(league, 0) < LEAGUE_MIN_MATCHES
+        elo_low_h, elo_low_a = eh.matches < ELO_MIN_MATCHES, ea.matches < ELO_MIN_MATCHES
+
+        dc_pred = None
+        if self.dc is not None and league not in self.national and not neutral:
+            dc_pred = self.dc.predict(home_id, away_id, league, ou_lines, keep_matrix=True)
+        w = min(max(self.settings.elo_weight, 0.0), 1.0)
+        if dc_pred is None:
+            method, m, lh, la = "Elo", m_elo, lh_e, la_e
+            low_h, low_a = elo_low_h, elo_low_a
+            new_h = new_a = False
+            cross = False
+        elif dc_pred.low_data and (not elo_low_h and not elo_low_a):
+            # W oknie Dixona-Colesa za mało meczów, ale ranking Elo ma dłuższą historię – prognoza z Elo.
+            method, m, lh, la = "Elo", m_elo, lh_e, la_e
+            low_h = low_a = False
+            new_h, new_a, cross = dc_pred.new_home, dc_pred.new_away, dc_pred.cross_league
+        else:
+            method = "Dixon-Coles + Elo" if w > 0 else "Dixon-Coles"
+            m = (1 - w) * dc_pred.matrix + w * m_elo
+            lh, la = (1 - w) * dc_pred.lam_home + w * lh_e, (1 - w) * dc_pred.lam_away + w * la_e
+            low_h, low_a = dc_pred.low_data_home and elo_low_h, dc_pred.low_data_away and elo_low_a
+            new_h, new_a, cross = dc_pred.new_home, dc_pred.new_away, dc_pred.cross_league
+        if thin_league:
+            low_h = low_a = True
+        m = m / m.sum()
+        return Prediction(
+            home_id=home_id, away_id=away_id, league=league, lam_home=lh, lam_away=la, rho=rho,
+            probs=market_probabilities(m, ou_lines), low_data_home=low_h, low_data_away=low_a,
+            new_home=new_h, new_away=new_a, cross_league=cross, likely_score=most_likely_score(m),
+            matrix=m if keep_matrix else None, method=method, elo_home=eh.rating, elo_away=ea.rating,
+        )
+
+    def summary(self) -> dict:
+        out = self.dc.summary() if self.dc else {}
+        out["elo_beta"] = round(self.elo.beta, 3)
+        return out

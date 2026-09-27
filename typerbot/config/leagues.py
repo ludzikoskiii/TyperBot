@@ -1,19 +1,22 @@
-"""Domyślny katalog lig z identyfikatorami w każdym źródle danych.
+"""Katalog lig i ich identyfikatory w źródłach danych (wszystkie bez klucza i rejestracji).
 
-Pokrycie football-data.co.uk (główne, darmowe źródło):
-  * Premier League, La Liga, Bundesliga, Serie A, Ligue 1 – format 'main': wyniki, kursy 1X2
-    i powyżej/poniżej 2,5 (przedmeczowe i zamknięcia), nadchodzące mecze z kursami (fixtures.csv);
-  * Ekstraklasa – format 'extra' (POL.csv): wyniki i kursy zamknięcia 1X2, bez powyżej/poniżej;
-    nadchodzące mecze w new_league_fixtures.csv;
-  * Liga Mistrzów – brak; terminarz i wyniki z football-data.org, kursy z uzupełnień.
+  * football-data.co.uk – 22 ligi 'main' (plik na sezon: wyniki, kursy, statystyki; nadchodzące
+    mecze z kursami w fixtures.csv) i 16 lig 'extra' (jeden plik ze wszystkimi sezonami: wyniki
+    i kursy 1X2; nadchodzące mecze w new_league_fixtures.csv);
+  * openfootball (football.json, domena publiczna) – terminarz całego sezonu z wyprzedzeniem
+    i wyniki; kod pliku, np. 'en.1';
+  * OpenLigaDB – ligi niemieckie (terminarz i wyniki na bieżąco); skrót, np. 'bl3';
+  * international_results – mecze reprezentacji (liga 'INT').
 
-Lista jest kopiowana do tabeli `leagues` przy pierwszym uruchomieniu;
-potem użytkownik może ją edytować w ustawieniach (włączać, wyłączać, dodawać).
+Katalog jest kopiowany do tabeli `leagues`; ligi, które pojawią się w danych, a nie ma ich
+w katalogu (np. nowa liga w pliku football-data.co.uk), są dopisywane automatycznie.
+Lista w interfejsie pokazuje ligi, dla których są dane.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -22,40 +25,104 @@ class League:
     name: str
     country: str
     is_cup: bool = False
-    fd_org_code: str | None = None       # football-data.org
-    odds_api_key: str | None = None      # The Odds API
-    oddspapi_id: int | None = None       # OddsPapi (tournamentId)
-    fdcuk_code: str | None = None        # football-data.co.uk (główne źródło: wyniki, kursy, terminarz)
+    fdcuk_code: str | None = None        # football-data.co.uk: kod pliku (np. E0, POL)
     fdcuk_format: str | None = None      # 'main' (plik na sezon) lub 'extra' (jeden plik)
     enabled: bool = True
     sort_order: int = 0
-    oddspapi_slug: str = ""              # 'kraj/liga' do weryfikacji tournamentId przez /tournaments
+    openfootball: str | None = None      # football.json: kod pliku (np. 'en.1')
+    openligadb: str | None = None        # OpenLigaDB: skrót ligi (np. 'bl3')
+    season_style: str = "split"          # 'split' (sezon 2026/27) | 'calendar' (sezon = rok)
+    timezone: str = "Europe/London"      # strefa godzin w terminarzu openfootball
+    tier: int = 1                        # poziom rozgrywek w kraju (1 = najwyższy)
+    national: bool = False               # reprezentacje (mecze często na neutralnym terenie)
 
+    def season_at(self, when: datetime) -> int:
+        """Sezon ligi dla daty: rok rozpoczęcia (split) albo rok kalendarzowy."""
+        return when.year if self.season_style == "calendar" else season_of(when.year, when.month)
+
+    def season_label(self, season: int) -> str:
+        return str(season) if self.season_style == "calendar" else f"{season}/{(season + 1) % 100:02d}"
+
+
+def _main(code, name, country, fd, of=None, tz="Europe/London", tier=1, **kw) -> League:
+    return League(code, name, country, fdcuk_code=fd, fdcuk_format="main", openfootball=of, timezone=tz,
+                  tier=tier, **kw)
+
+
+def _extra(code, name, country, fd, of=None, tz="UTC", style="split", **kw) -> League:
+    return League(code, name, country, fdcuk_code=fd, fdcuk_format="extra", openfootball=of, timezone=tz,
+                  season_style=style, **kw)
+
+
+LON, BER, MAD, ROM, PAR = "Europe/London", "Europe/Berlin", "Europe/Madrid", "Europe/Rome", "Europe/Paris"
 
 DEFAULT_LEAGUES: list[League] = [
-    League("EKS", "Ekstraklasa", "Polska", odds_api_key="soccer_poland_ekstraklasa",
-           oddspapi_id=202, fdcuk_code="POL", fdcuk_format="extra", sort_order=1, oddspapi_slug="poland/ekstraklasa"),
-    League("PL", "Premier League", "Anglia", fd_org_code="PL", odds_api_key="soccer_epl",
-           oddspapi_id=17, fdcuk_code="E0", fdcuk_format="main", sort_order=2, oddspapi_slug="england/premier-league"),
-    League("PD", "La Liga", "Hiszpania", fd_org_code="PD", odds_api_key="soccer_spain_la_liga",
-           oddspapi_id=8, fdcuk_code="SP1", fdcuk_format="main", sort_order=3, oddspapi_slug="spain/laliga"),
-    League("BL1", "Bundesliga", "Niemcy", fd_org_code="BL1", odds_api_key="soccer_germany_bundesliga",
-           oddspapi_id=35, fdcuk_code="D1", fdcuk_format="main", sort_order=4, oddspapi_slug="germany/bundesliga"),
-    League("SA", "Serie A", "Włochy", fd_org_code="SA", odds_api_key="soccer_italy_serie_a",
-           oddspapi_id=23, fdcuk_code="I1", fdcuk_format="main", sort_order=5, oddspapi_slug="italy/serie-a"),
-    League("FL1", "Ligue 1", "Francja", fd_org_code="FL1", odds_api_key="soccer_france_ligue_one",
-           oddspapi_id=34, fdcuk_code="F1", fdcuk_format="main", sort_order=6, oddspapi_slug="france/ligue-1"),
-    League("CL", "Liga Mistrzów", "Europa", is_cup=True, fd_org_code="CL", odds_api_key="soccer_uefa_champs_league", oddspapi_id=7, sort_order=7,
-           oddspapi_slug="europe/uefa-champions-league"),
-    # Dodatkowe ligi – domyślnie wyłączone, do włączenia w ustawieniach.
-    League("ELC", "Championship", "Anglia", fd_org_code="ELC", odds_api_key="soccer_efl_champ",
-           oddspapi_id=18, fdcuk_code="E1", fdcuk_format="main", enabled=False, sort_order=8,
-           oddspapi_slug="england/championship"),
-    League("DED", "Eredivisie", "Holandia", fd_org_code="DED", odds_api_key="soccer_netherlands_eredivisie", oddspapi_id=37, fdcuk_code="N1", fdcuk_format="main",
-           enabled=False, sort_order=9, oddspapi_slug="netherlands/eredivisie"),
-    League("PPL", "Primeira Liga", "Portugalia", fd_org_code="PPL", odds_api_key="soccer_portugal_primeira_liga", oddspapi_id=238, fdcuk_code="P1", fdcuk_format="main",
-           enabled=False, sort_order=10, oddspapi_slug="portugal/liga-portugal"),
+    # --- Polska ---
+    _extra("EKS", "Ekstraklasa", "Polska", "POL", tz="Europe/Warsaw"),
+    # --- Anglia ---
+    _main("PL", "Premier League", "Anglia", "E0", "en.1", LON),
+    _main("ELC", "Championship", "Anglia", "E1", "en.2", LON, tier=2),
+    _main("E2", "League One", "Anglia", "E2", "en.3", LON, tier=3),
+    _main("E3", "League Two", "Anglia", "E3", "en.4", LON, tier=4),
+    _main("EC", "National League", "Anglia", "EC", None, LON, tier=5),
+    # --- Szkocja ---
+    _main("SC0", "Premiership", "Szkocja", "SC0", "sco.1", LON),
+    _main("SC1", "Championship", "Szkocja", "SC1", None, LON, tier=2),
+    _main("SC2", "League One", "Szkocja", "SC2", None, LON, tier=3),
+    _main("SC3", "League Two", "Szkocja", "SC3", None, LON, tier=4),
+    # --- Niemcy ---
+    _main("BL1", "Bundesliga", "Niemcy", "D1", "de.1", BER, openligadb="bl1"),
+    _main("D2", "2. Bundesliga", "Niemcy", "D2", "de.2", BER, tier=2, openligadb="bl2"),
+    League("BL3", "3. Liga", "Niemcy", openfootball="de.3", openligadb="bl3", timezone=BER, tier=3),
+    League("DFB", "Puchar Niemiec", "Niemcy", is_cup=True, openligadb="dfb", timezone=BER),
+    # --- Hiszpania, Włochy, Francja ---
+    _main("PD", "La Liga", "Hiszpania", "SP1", "es.1", MAD),
+    _main("SP2", "Segunda División", "Hiszpania", "SP2", "es.2", MAD, tier=2),
+    _main("SA", "Serie A", "Włochy", "I1", "it.1", ROM),
+    _main("I2", "Serie B", "Włochy", "I2", "it.2", ROM, tier=2),
+    _main("FL1", "Ligue 1", "Francja", "F1", "fr.1", PAR),
+    _main("F2", "Ligue 2", "Francja", "F2", "fr.2", PAR, tier=2),
+    # --- pozostała Europa ---
+    _main("DED", "Eredivisie", "Holandia", "N1", "nl.1", "Europe/Amsterdam"),
+    _main("B1", "Pro League", "Belgia", "B1", "be.1", "Europe/Brussels"),
+    _main("PPL", "Primeira Liga", "Portugalia", "P1", "pt.1", "Europe/Lisbon"),
+    _main("T1", "Süper Lig", "Turcja", "T1", "tr.1", "Europe/Istanbul"),
+    _main("G1", "Super League", "Grecja", "G1", "gr.1", "Europe/Athens"),
+    _extra("AUT", "Bundesliga", "Austria", "AUT", "at.1", "Europe/Vienna"),
+    League("AT2", "2. Liga", "Austria", openfootball="at.2", timezone="Europe/Vienna", tier=2),
+    _extra("SWZ", "Super League", "Szwajcaria", "SWZ", "ch.1", "Europe/Zurich"),
+    _extra("DNK", "Superliga", "Dania", "DNK", None, "Europe/Copenhagen"),
+    _extra("NOR", "Eliteserien", "Norwegia", "NOR", None, "Europe/Oslo", style="calendar"),
+    _extra("SWE", "Allsvenskan", "Szwecja", "SWE", None, "Europe/Stockholm", style="calendar"),
+    _extra("FIN", "Veikkausliiga", "Finlandia", "FIN", None, "Europe/Helsinki", style="calendar"),
+    _extra("IRL", "Premier Division", "Irlandia", "IRL", None, "Europe/Dublin", style="calendar"),
+    _extra("ROU", "Liga I", "Rumunia", "ROU", None, "Europe/Bucharest"),
+    _extra("RUS", "Priemjer-Liga", "Rosja", "RUS", None, "Europe/Moscow"),
+    # --- Ameryki i Azja ---
+    _extra("BRA", "Série A", "Brazylia", "BRA", "br.1", "America/Sao_Paulo", style="calendar"),
+    League("BR2", "Série B", "Brazylia", openfootball="br.2", timezone="America/Sao_Paulo", tier=2,
+           season_style="calendar"),
+    _extra("ARG", "Liga Profesional", "Argentyna", "ARG", "ar.1", "America/Argentina/Buenos_Aires",
+           style="calendar"),
+    League("COL", "Primera A", "Kolumbia", openfootball="co.1", timezone="America/Bogota", season_style="calendar"),
+    _extra("MEX", "Liga MX", "Meksyk", "MEX", None, "America/Mexico_City"),
+    _extra("USA", "MLS", "USA", "USA", "mls", "America/New_York", style="calendar"),
+    _extra("JPN", "J1 League", "Japonia", "JPN", "jp.1", "Asia/Tokyo", style="calendar"),
+    _extra("CHN", "Super League", "Chiny", "CHN", "cn.1", "Asia/Shanghai", style="calendar"),
+    # --- puchary i reprezentacje ---
+    League("LIB", "Copa Libertadores", "Ameryka Płd.", is_cup=True, openfootball="copa.l",
+           timezone="America/Sao_Paulo", season_style="calendar"),
+    League("CL", "Liga Mistrzów", "Europa", is_cup=True),
+    League("INT", "Reprezentacje", "Świat", timezone="UTC", season_style="calendar", national=True),
 ]
+DEFAULT_LEAGUES = [replace(lg, sort_order=i) for i, lg in enumerate(DEFAULT_LEAGUES, start=1)]
+
+# Kraje w plikach football-data.co.uk 'extra' (kolumna Country) → kod pliku.
+FDCUK_EXTRA_COUNTRIES = {
+    "Poland": "POL", "Argentina": "ARG", "Austria": "AUT", "Brazil": "BRA", "China": "CHN", "Denmark": "DNK",
+    "Finland": "FIN", "Ireland": "IRL", "Japan": "JPN", "Mexico": "MEX", "Norway": "NOR", "Romania": "ROU",
+    "Russia": "RUS", "Sweden": "SWE", "Switzerland": "SWZ", "USA": "USA",
+}
 
 
 def season_of(year: int, month: int) -> int:

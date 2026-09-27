@@ -46,10 +46,13 @@ def test_matches_tab_shows_predictions(window):
     assert tab.table.rowCount() <= len(tab.evaluated)
 
 
-def test_status_bar_reports_sources(window):
+def test_status_bar_reports_sources_and_data_date(window):
     text = window.sources_label.text()
-    for name in ("football-data.co.uk", "football-data.org", "OddsPapi", "The Odds API"):
+    for name in ("football-data.co.uk", "openfootball", "OpenLigaDB", "Reprezentacje"):
         assert name in text
+    for gone in ("football-data.org", "OddsPapi", "The Odds API", "zużyto"):
+        assert gone not in text
+    assert "dane z:" in text and "nigdy" not in text
     assert "Zaktualizowano" in window.message_label.text()
 
 
@@ -168,17 +171,56 @@ def test_settings_screens_keep_defaults(window):
 
 def test_settings_roundtrip(window):
     tab = window.settings
+    assert not hasattr(tab, "key_edits") and not hasattr(tab, "quota_table")      # bez kluczy i limitów API
+    assert tab.sources_table.rowCount() == 5
     tab.model_weight.setValue(45)
+    tab.elo_weight.setValue(30)
+    tab.estimated_margin.setValue(8)
     tab.market_checks["BTTS"].setChecked(False)
+    tab.source_checks["openligadb"].setChecked(False)
+    tab.leagues.set_country("Japonia", False)
     tab.save()
     s = window.ctx.settings()
-    assert s.model.model_weight == pytest.approx(0.45)
+    assert s.model.model_weight == pytest.approx(0.45) and s.model.elo_weight == pytest.approx(0.30)
+    assert s.odds.estimated_margin == pytest.approx(0.08) and not s.sync.openligadb
     assert "BTTS" not in s.markets_enabled and "BTTS" not in s.coupon.markets
     assert not window.coupons.markets["BTTS"].isEnabled()     # generator reaguje na zmianę ustawień
-    tab.key_edits["oddspapi"].setText("nowy-klucz-9999")
-    tab.save_key("oddspapi")
-    assert window.ctx.secrets.get("oddspapi") == "nowy-klucz-9999"
-    assert tab.quota_table.rowCount() >= 4
+    assert not window.ctx.sync.leagues.get("JPN").enabled
+    assert "JPN" not in window.coupons.leagues.codes()        # liga wyłączona znika z generatora
+
+
+def test_league_tree_search_and_countries(window):
+    tree = window.coupons.leagues
+    assert {"PL", "E2", "EKS", "BL3", "BRA", "JPN", "USA"} <= set(tree.codes())
+    assert tree.all_checked() and window.coupons.current_cfg().leagues == []
+    tree.set_country("Anglia", False)
+    cfg = window.coupons.current_cfg()
+    assert "PL" not in cfg.leagues and "E2" not in cfg.leagues and "BRA" in cfg.leagues
+    tree.search.setText("brazy")
+    visible = [tree.tree.topLevelItem(i).text(0) for i in range(tree.tree.topLevelItemCount())
+               if not tree.tree.topLevelItem(i).isHidden()]
+    assert visible == ["Brazylia"]
+    tree.search.setText("")
+
+
+def test_estimated_odds_coupon_is_clearly_marked(window):
+    tab = window.coupons
+    tab.leagues.set_checked(["BL3"])                   # 3. Liga – tylko terminarz, bez kursów bukmacherów
+    tab.set_range("custom")
+    from PySide6.QtCore import QDate
+    tab.date_from.setDate(QDate(2026, 10, 13))
+    tab.date_to.setDate(QDate(2026, 10, 18))
+    tab.target.setValue(3.0)
+    tab.tolerance.setValue(20)
+    tab.min_prob.setValue(35)
+    tab.generate()
+    cards = tab.cards()
+    assert cards and all(c.coupon.estimated_legs == len(c.coupon.legs) for c in cards)
+    texts = [w.text() for w in cards[0].findChildren(QtWidgets.QLabel)]
+    assert any("Kupon z kursami szacunkowymi" in t for t in texts)
+    assert any("kurs szacunkowy – sprawdź u bukmachera" in t for t in texts)
+    assert "UWAGA: kupon z kursami szacunkowymi" in cards[0].text()
+    assert "kursami szacunkowymi" in tab.status.text()
 
 
 def test_no_money_anywhere_and_export(window, tmp_path):

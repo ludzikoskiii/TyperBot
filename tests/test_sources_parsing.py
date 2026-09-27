@@ -1,132 +1,18 @@
 from datetime import datetime, timezone
 
 from typerbot.config.leagues import DEFAULT_LEAGUES
-from typerbot.data.records import FINISHED, POSTPONED, SCHEDULED
+from typerbot.data.records import FINISHED, SCHEDULED
 from typerbot.data.sources.football_data_csv import (
     parse_extra, parse_fixtures_extra, parse_fixtures_main, parse_main, parse_season_label, season_code,
 )
-from typerbot.data.sources.football_data_org import FootballDataOrg, regular_time_score
-from typerbot.data.sources.oddspapi import OddsPapi, parse_bookmaker_odds, parse_market_definition
-from typerbot.data.sources.the_odds_api import TheOddsApi, parse_double_chance
+from typerbot.data.sources.club_names import parse_clubs
+from typerbot.data.sources.international import parse_results
+from typerbot.data.sources.openfootball import parse_season, season_folder
+from typerbot.data.sources.openligadb import parse_matches
 
 LEAGUE = {lg.code: lg for lg in DEFAULT_LEAGUES}
 
 
-def _source(cls):
-    return cls.__new__(cls)  # parsowanie nie potrzebuje klienta HTTP
-
-
-# -- football-data.org -----------------------------------------------------------------
-def test_fdorg_regular_time_score_excludes_extra_time_and_penalties():
-    assert regular_time_score({"duration": "REGULAR", "fullTime": {"home": 2, "away": 1}}) == (2, 1)
-    assert regular_time_score({"duration": "EXTRA_TIME", "fullTime": {"home": 2, "away": 1},
-                               "regularTime": {"home": 1, "away": 1}}) == (1, 1)
-    assert regular_time_score({"duration": "PENALTY_SHOOTOUT", "fullTime": {"home": 6, "away": 5},
-                               "extraTime": {"home": 0, "away": 0}, "penalties": {"home": 5, "away": 4}}) == (1, 1)
-
-
-def test_fdorg_parse_matches():
-    src = _source(FootballDataOrg)
-    src.name = "football_data_org"
-    data = {"matches": [
-        {"id": 1, "utcDate": "2026-09-27T14:00:00Z", "status": "FINISHED", "season": {"startDate": "2026-08-15"},
-         "homeTeam": {"name": "Arsenal FC", "shortName": "Arsenal"}, "awayTeam": {"name": "Chelsea FC"},
-         "score": {"duration": "REGULAR", "fullTime": {"home": 3, "away": 0}}},
-        {"id": 2, "utcDate": "2026-10-04T14:00:00Z", "status": "POSTPONED", "season": {"startDate": "2026-08-15"},
-         "homeTeam": {"name": "Everton FC"}, "awayTeam": {"name": "Fulham FC"}, "score": {"fullTime": {}}},
-        {"id": 3, "utcDate": "2026-10-04T14:00:00Z", "status": "TIMED",
-         "homeTeam": {"name": None}, "awayTeam": {"name": "X"}},  # drużyna nieustalona – pomijamy
-    ]}
-    recs = src.parse_matches(data, LEAGUE["PL"])
-    assert len(recs) == 2
-    assert (recs[0].status, recs[0].home_goals, recs[0].season, recs[0].home_hints) == (FINISHED, 3, 2026, ("Arsenal",))
-    assert recs[1].status == POSTPONED and recs[1].home_goals is None
-    assert recs[0].kickoff.tzinfo == timezone.utc
-
-
-# -- The Odds API -----------------------------------------------------------------------
-def test_odds_api_parse_event_markets():
-    src = _source(TheOddsApi)
-    src.name = "the_odds_api"
-    event = {"id": "ev1", "commence_time": "2026-09-27T16:00:00Z", "home_team": "Legia Warsaw",
-             "away_team": "Lech Poznań", "bookmakers": [{"key": "unibet_eu", "markets": [
-                 {"key": "h2h", "outcomes": [{"name": "Legia Warsaw", "price": 2.1}, {"name": "Draw", "price": 3.4},
-                                             {"name": "Lech Poznań", "price": 3.3}]},
-                 {"key": "totals", "outcomes": [{"name": "Over", "price": 1.9, "point": 2.5},
-                                                {"name": "Under", "price": 1.9, "point": 2.5}]},
-                 {"key": "btts", "outcomes": [{"name": "Yes", "price": 1.8}, {"name": "No", "price": 2.0}]},
-                 {"key": "double_chance", "outcomes": [{"name": "Legia Warsaw/Draw", "price": 1.3},
-                                                       {"name": "Legia Warsaw/Lech Poznań", "price": 1.3},
-                                                       {"name": "Draw/Lech Poznań", "price": 1.6}]},
-                 {"key": "spreads", "outcomes": [{"name": "Legia Warsaw", "price": 1.9, "point": -0.5}]},
-             ]}]}
-    rec = src.parse_event(event, LEAGUE["EKS"])
-    got = {(q.market, q.selection, q.line): q.price for q in rec.odds}
-    assert got[("1X2", "H", 0.0)] == 2.1 and got[("1X2", "D", 0.0)] == 3.4 and got[("1X2", "A", 0.0)] == 3.3
-    assert got[("OU", "O", 2.5)] == 1.9 and got[("BTTS", "Y", 0.0)] == 1.8
-    assert got[("DC", "1X", 0.0)] == 1.3 and got[("DC", "12", 0.0)] == 1.3 and got[("DC", "X2", 0.0)] == 1.6
-    assert len(rec.odds) == 10  # 3 + 2 + 2 + 3, spreads pominięte
-    assert rec.status == SCHEDULED and rec.season == 2026
-
-
-def test_double_chance_name_variants():
-    assert parse_double_chance("Home/Draw", "A", "B") == "1X"
-    assert parse_double_chance("Draw or Away", "A", "B") == "X2"
-    assert parse_double_chance("Widzew Łódź/Legia", "Widzew Lodz", "Legia") == "12"
-    assert parse_double_chance("Something", "A", "B") is None
-
-
-# -- OddsPapi --------------------------------------------------------------------------------
-MARKETS = [
-    {"marketId": 1010, "marketName": "Over Under Full Time", "handicap": 2.5,
-     "outcomes": [{"outcomeId": 1010, "outcomeName": "Over"}, {"outcomeId": 1011, "outcomeName": "Under"}]},
-    {"marketId": 104, "marketName": "Both Teams To Score", "outcomes": [
-        {"outcomeId": 104, "outcomeName": "Yes"}, {"outcomeId": 105, "outcomeName": "No"}]},
-    {"marketId": 10, "marketName": "Double Chance", "outcomes": [
-        {"outcomeId": 10, "outcomeName": "1X"}, {"outcomeId": 11, "outcomeName": "12"}, {"outcomeId": 12, "outcomeName": "X2"}]},
-    {"marketId": 1020, "marketName": "Over Under 1st Half", "handicap": 0.5, "outcomes": [
-        {"outcomeId": 1020, "outcomeName": "Over"}, {"outcomeId": 1021, "outcomeName": "Under"}]},
-]
-
-
-def market_map():
-    mapping = {"101": ("1X2", 0.0, {"101": "H", "102": "D", "103": "A"})}
-    for m in MARKETS:
-        parsed = parse_market_definition(m)
-        if parsed:
-            mapping[str(m["marketId"])] = parsed
-    return mapping
-
-
-def test_oddspapi_market_definitions():
-    mm = market_map()
-    assert mm["1010"] == ("OU", 2.5, {"1010": "O", "1011": "U"})
-    assert mm["104"][0] == "BTTS" and mm["10"][2] == {"10": "1X", "11": "12", "12": "X2"}
-    assert "1020" not in mm  # rynek na 1. połowę pomijamy
-
-
-def test_oddspapi_bookmaker_odds():
-    price = lambda p, active=True: {"players": {"0": {"price": p, "active": active}}}  # noqa: E731
-    odds = {"superbet": {"markets": {
-        "101": {"outcomes": {"101": price(2.05), "102": price(3.5), "103": price(3.6, active=False)}},
-        "1010": {"outcomes": {"1010": price(1.85), "1011": price(1.95)}},
-        "999": {"outcomes": {"1": price(1.5)}},
-    }}}
-    quotes = parse_bookmaker_odds(odds, market_map())
-    got = {(q.market, q.selection, q.line): q.price for q in quotes}
-    assert got == {("1X2", "H", 0.0): 2.05, ("1X2", "D", 0.0): 3.5, ("OU", "O", 2.5): 1.85, ("OU", "U", 2.5): 1.95}
-
-
-def test_oddspapi_fixture_parse():
-    src = _source(OddsPapi)
-    src.name = "oddspapi"
-    rec = src.parse_fixture({"fixtureId": "id1", "participant1Name": "Legia Warszawa", "participant2Name": "Lech Poznań",
-                             "startTime": "2026-09-27T16:00:00Z", "statusId": 2}, LEAGUE["EKS"])
-    assert rec.status == FINISHED and rec.home_goals is None and rec.external_id == "id1"
-    assert src.parse_fixture({"fixtureId": "id2"}, LEAGUE["EKS"]) is None
-
-
-# -- football-data.co.uk (główne źródło) ------------------------------------------------------------------
 MAIN_CSV = """Div,Date,Time,HomeTeam,AwayTeam,FTHG,FTAG,FTR,HS,AS,HST,AST,B365H,B365D,B365A,AvgH,AvgD,AvgA,Avg>2.5,Avg<2.5,PSCH,PSCD,PSCA,AvgC>2.5,AvgC<2.5
 E0,16/08/2024,20:00,Man United,Fulham,1,0,H,14,10,5,2,1.60,4.20,5.25,1.62,4.15,5.10,1.80,2.00,1.65,4.00,5.20,1.85,1.95
 E0,17/08/24,,Ipswich,Liverpool,0,2,A,7,18,2,5,,,,,,,,,,,,,
@@ -198,9 +84,93 @@ def test_csv_fixtures_extra_matches_country():
     assert all(q.market == "1X2" and q.kind == "pre" for q in recs[0].odds)
 
 
-def test_odds_api_events_without_odds():
-    src = _source(TheOddsApi)
-    src.name = "the_odds_api"
-    rec = src.parse_event({"id": "e1", "commence_time": "2026-09-28T16:00:00Z", "home_team": "Legia Warsaw",
-                           "away_team": "Lech Poznań"}, LEAGUE["EKS"])
-    assert rec.odds == [] and rec.status == SCHEDULED and rec.external_id == "e1"
+def test_csv_fixtures_resolver_adds_unknown_leagues():
+    seen = []
+
+    def resolve(div):
+        seen.append(div)
+        return LEAGUE["PL"] if div == "E0" else None
+
+    recs = parse_fixtures_main(FIXTURES_CSV, resolve, NOW)
+    assert {r.league_code for r in recs} == {"PL"} and "I1" in seen and "SP1" in seen
+
+
+def test_calendar_season_for_fixtures():
+    text = "Country,League,Date,Time,Home,Away,AvgH,AvgD,AvgA\nBrazil,Serie A,27/09/2026,21:30,Flamengo RJ,Santos,1.6,3.9,5.5\n"
+    rec = parse_fixtures_extra(text, [LEAGUE["BRA"]], NOW)[0]
+    assert rec.season == 2026 and rec.league_code == "BRA"
+
+
+# -- openfootball ------------------------------------------------------------------------------
+OPENFOOTBALL = {"name": "Premier League 2026/27", "matches": [
+    {"round": "Matchday 1", "date": "2026-08-21", "time": "20:00", "team1": "Arsenal FC", "team2": "Coventry City FC",
+     "score": {"ht": [2, 0], "ft": [3, 0]}},
+    {"round": "Matchday 8", "date": "2026-10-10", "time": "12:30", "team1": "Chelsea FC", "team2": "Everton FC"},
+    {"round": "Matchday 38", "date": "2027-05-30", "team1": "Fulham FC", "team2": "Liverpool FC"},
+]}
+
+
+def test_openfootball_season_parse():
+    recs = parse_season(OPENFOOTBALL, LEAGUE["PL"], 2026)
+    assert len(recs) == 3
+    done, soon, later = recs
+    assert done.status == FINISHED and (done.home_goals, done.away_goals) == (3, 0)
+    assert done.kickoff == datetime(2026, 8, 21, 19, 0, tzinfo=timezone.utc)      # 20:00 BST
+    assert soon.status == SCHEDULED and soon.home_goals is None and soon.kickoff_exact
+    assert soon.external_id == "PL:2026:Matchday 8:Chelsea FC:Everton FC"         # bez daty – przełożenie nie dubluje
+    assert not later.kickoff_exact and later.kickoff.date().isoformat() == "2027-05-30"
+    assert season_folder(LEAGUE["PL"], 2026) == "2026-27" and season_folder(LEAGUE["BRA"], 2026) == "2026"
+
+
+def test_openfootball_old_rounds_format():
+    data = {"rounds": [{"name": "1", "matches": [{"date": "2015-08-08", "team1": "A", "team2": "B",
+                                                   "score1": 1, "score2": 0}]}]}
+    rec = parse_season(data, LEAGUE["PL"], 2015)[0]
+    assert rec.status == FINISHED and rec.home_goals == 1
+
+
+# -- OpenLigaDB ---------------------------------------------------------------------------------
+def test_openligadb_parse():
+    data = [
+        {"matchID": 1, "matchDateTimeUTC": "2026-09-19T17:00:00Z", "matchIsFinished": True,
+         "team1": {"teamName": "TSV 1860 München", "shortName": "1860"}, "team2": {"teamName": "SC Verl"},
+         "matchResults": [{"resultTypeID": 1, "pointsTeam1": 0, "pointsTeam2": 0},
+                          {"resultTypeID": 2, "pointsTeam1": 2, "pointsTeam2": 1}]},
+        {"matchID": 2, "matchDateTimeUTC": "2026-10-13T17:00:00Z", "matchIsFinished": False,
+         "team1": {"teamName": "SC Verl"}, "team2": {"teamName": "FC Ingolstadt 04"}, "matchResults": []},
+    ]
+    done, upcoming = parse_matches(data, LEAGUE["BL3"], 2026)
+    assert done.status == FINISHED and (done.home_goals, done.away_goals) == (2, 1)
+    assert done.home_hints == ("1860",) and done.external_id == "1"
+    assert upcoming.status == SCHEDULED and upcoming.kickoff.hour == 17
+
+
+# -- reprezentacje i nazwy klubów -------------------------------------------------------------------
+def test_international_results_parse():
+    text = ("date,home_team,away_team,home_score,away_score,tournament,city,country,neutral\n"
+            "2010-06-11,South Africa,Mexico,1,1,FIFA World Cup,Johannesburg,South Africa,FALSE\n"
+            "2026-06-20,Poland,Brazil,0,2,FIFA World Cup,Dallas,United States,TRUE\n"
+            "2026-10-10,Poland,Norway,NA,NA,UEFA Nations League,Warsaw,Poland,FALSE\n")
+    recs = parse_results(text, datetime(2014, 1, 1).date())
+    assert len(recs) == 2                                   # starsze niż data odcięcia pominięte
+    played, planned = recs
+    assert played.status == FINISHED and played.neutral and played.league_code == "INT"
+    assert planned.status == SCHEDULED and planned.home_goals is None and not planned.kickoff_exact
+
+
+def test_club_names_parse():
+    text = """====================
+=  England
+
+Arsenal FC, 1886, @ Emirates Stadium, London   ## Greater London
+  | Arsenal | FC Arsenal
+  | Arsenal Football Club
+Manchester United FC, 1878
+  | Man United | Man Utd     # skróty
+  @ Old Trafford
+Newport County AFC
+"""
+    clubs = dict(parse_clubs(text))
+    assert clubs["Arsenal FC"] == ["Arsenal", "FC Arsenal", "Arsenal Football Club"]
+    assert clubs["Manchester United FC"] == ["Man United", "Man Utd"]
+    assert clubs["Newport County AFC"] == []

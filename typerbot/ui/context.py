@@ -1,4 +1,4 @@
-"""Wspólny kontekst okna: baza, klucze, serwisy i sygnały odświeżania."""
+"""Wspólny kontekst okna: baza, serwisy i sygnały odświeżania."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from typerbot.config.secrets import KEYED_SOURCES, MemorySecretStore, SecretStore, default_secret_store
+from typerbot.config.secrets import MemorySecretStore, SecretStore, default_secret_store
 from typerbot.config.settings import Settings, SettingsStore
 from typerbot.data.db import Database
 from typerbot.paths import db_path
@@ -61,9 +61,6 @@ class AppContext:
         settled = self.register.settle_pending()
         return report, settled
 
-    def has_any_key(self) -> bool:
-        return any(self.secrets.get(s) for s in KEYED_SOURCES)
-
 
 def real_context() -> AppContext:
     db = Database(db_path())
@@ -72,16 +69,14 @@ def real_context() -> AppContext:
 
 
 def demo_context(now: datetime | None = None, folder: Path | None = None) -> AppContext:
-    """Tryb demo: dane syntetyczne, tymczasowa baza, bez kluczy i internetu."""
+    """Tryb demo: dane syntetyczne, tymczasowa baza, bez internetu."""
     from typerbot.demo.transport import DemoTransport
     from typerbot.demo.world import DemoWorld
 
     moment = now or datetime.now(timezone.utc)
     folder = folder or Path(tempfile.mkdtemp(prefix="typerbot-demo-"))
     db = Database(folder / "demo.db")
-    secrets = MemorySecretStore({s: "demo-key-1234" for s in KEYED_SOURCES})
-    sync = SyncService(db, secrets, transport=DemoTransport(DemoWorld(moment)), now=lambda: moment,
-                       rate_limits=False)
-    for league in sync.leagues.all():
-        sync.leagues.set_enabled(league.code, league.code in ("PL", "EKS"))
-    return AppContext(db, secrets, sync, DataHub(), demo=True, now=lambda: moment)
+    world = DemoWorld(moment)
+    sync = SyncService(db, MemorySecretStore(), transport=DemoTransport(world), now=lambda: moment, rate_limits=False)
+    world.enable_leagues(sync.leagues)
+    return AppContext(db, MemorySecretStore(), sync, DataHub(), demo=True, now=lambda: moment)

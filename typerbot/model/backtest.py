@@ -32,7 +32,8 @@ from typerbot.data.db import Database
 from typerbot.data.repository import odds_view
 from typerbot.model.data import DAY_SECONDS, MatchTable, load_matches
 from typerbot.model.markets import Key
-from typerbot.model.predictor import FittedModel
+from typerbot.model.elo import EloModel, EloTable
+from typerbot.model.predictor import FittedModel, HybridModel
 
 MARKET_KEYS: dict[str, list[Key]] = {
     "1X2": [("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0)],
@@ -222,7 +223,10 @@ def run_backtest(db: Database, config: BacktestConfig, model_settings: ModelSett
                  progress=None) -> BacktestResult:
     started = time.time()
     cups = {r["code"] for r in db.query("SELECT code FROM leagues WHERE is_cup = 1")}
+    national = {r["code"] for r in db.query("SELECT code FROM leagues WHERE national = 1")}
     table_all = load_matches(db)
+    # Ranking Elo liczony raz na całej historii (wszystkie ligi) – w każdym tygodniu używamy ocen sprzed odcięcia.
+    elo_table = EloTable.build(table_all, model_settings.elo_k) if len(table_all) else None
     rows: list[EvalRow] = []
     fits = skipped = 0
     notes: list[str] = []
@@ -242,12 +246,17 @@ def run_backtest(db: Database, config: BacktestConfig, model_settings: ModelSett
         for wi, (week, idx) in enumerate(sorted(weeks.items())):
             if progress:
                 progress(league, li, total_leagues, wi, len(weeks))
-            model = FittedModel.fit(table, week, model_settings, previous=previous)
-            if model is None or len(model.window.rows) < config.min_train_matches:
+            dc_model = FittedModel.fit(table, week, model_settings, previous=previous) if league not in national else None
+            elo = EloModel.fit(table_all, elo_table, week, rho=dc_model.params.rho if dc_model else -0.05)
+            end = int(np.searchsorted(table_all.t, week, side="left"))
+            history = int((table_all.league[:end] == league).sum())
+            trained = len(dc_model.window.rows) if dc_model else history
+            if trained < config.min_train_matches:
                 skipped += 1
                 continue
             fits += 1
-            previous = model
+            previous = dc_model or previous
+            model = HybridModel(dc_model, elo, model_settings, national, {league: history})
             for i in idx:
                 rows.append(_evaluate(table, i, league, model, odds.get(int(table.match_id[i]), {}), config,
                                       model_settings.model_weight))
@@ -294,9 +303,10 @@ def _fair(prices: dict[Key, float], keys: list[Key], method: str) -> dict[Key, f
     return dict(zip(keys, probs))
 
 
-def _evaluate(table: MatchTable, i: int, league: str, model: FittedModel,
+def _evaluate(table: MatchTable, i: int, league: str, model: HybridModel,
               odds: dict[str, list[dict]], config: BacktestConfig, model_weight: float = 1.0) -> EvalRow:
-    pred = model.predict(int(table.home_id[i]), int(table.away_id[i]), league)
+    neutral = bool(table.neutral[i]) if table.neutral is not None else False
+    pred = model.predict(int(table.home_id[i]), int(table.away_id[i]), league, neutral=neutral)
     close = odds_view(odds.get("close") or odds.get("pre") or []).average
     pre = odds_view(odds.get(config.bet_odds) or odds.get("close") or odds.get("pre") or []).average
     market: dict[Key, float] = {}

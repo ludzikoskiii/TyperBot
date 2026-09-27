@@ -43,8 +43,8 @@ def test_seed_groups_link_known_variants():
 def test_same_team_from_different_sources(db):
     LeagueRepository(db).ensure_defaults()
     m = TeamMatcher(db)
-    a = resolve(db, m, "oddspapi", "EKS", "Rakow Czestochowa")
-    b = resolve(db, m, "the_odds_api", "EKS", "Raków Częstochowa")
+    a = resolve(db, m, "openligadb", "EKS", "Rakow Czestochowa")
+    b = resolve(db, m, "openfootball", "EKS", "Raków Częstochowa")
     c = resolve(db, m, "football_data_csv", "EKS", "Rakow")
     assert a.created and not b.created and not c.created
     assert a.team_id == b.team_id == c.team_id
@@ -53,11 +53,11 @@ def test_same_team_from_different_sources(db):
 
 def test_lech_and_lechia_stay_separate(db):
     m = TeamMatcher(db)
-    lech = resolve(db, m, "oddspapi", "EKS", "Lech Poznan")
-    lechia = resolve(db, m, "oddspapi", "EKS", "Lechia Gdansk")
+    lech = resolve(db, m, "openligadb", "EKS", "Lech Poznan")
+    lechia = resolve(db, m, "openligadb", "EKS", "Lechia Gdansk")
     assert lech.team_id != lechia.team_id
-    assert resolve(db, m, "the_odds_api", "EKS", "Lechia Gdańsk").team_id == lechia.team_id
-    assert resolve(db, m, "the_odds_api", "EKS", "Lech Poznań").team_id == lech.team_id
+    assert resolve(db, m, "openfootball", "EKS", "Lechia Gdańsk").team_id == lechia.team_id
+    assert resolve(db, m, "openfootball", "EKS", "Lech Poznań").team_id == lech.team_id
 
 
 def test_paris_fc_not_merged_with_psg(db):
@@ -65,65 +65,77 @@ def test_paris_fc_not_merged_with_psg(db):
     psg = resolve(db, m, "football_data_csv", "FL1", "Paris SG")
     pfc = resolve(db, m, "football_data_csv", "FL1", "Paris FC")
     assert psg.team_id != pfc.team_id
-    assert resolve(db, m, "the_odds_api", "FL1", "Paris Saint Germain").team_id == psg.team_id
-    assert resolve(db, m, "the_odds_api", "FL1", "Paris FC").team_id == pfc.team_id
+    assert resolve(db, m, "openfootball", "FL1", "Paris Saint Germain").team_id == psg.team_id
+    assert resolve(db, m, "openfootball", "FL1", "Paris FC").team_id == pfc.team_id
 
 
 def test_team_with_alias_from_same_source_is_not_candidate(db):
     m = TeamMatcher(db)
-    a = resolve(db, m, "the_odds_api", "PL", "Sheffield United")
-    b = resolve(db, m, "the_odds_api", "PL", "Sheffield United Reserves")  # inna nazwa z tego samego źródła
+    a = resolve(db, m, "openfootball", "PL", "Sheffield United")
+    b = resolve(db, m, "openfootball", "PL", "Sheffield United Reserves")  # inna nazwa z tego samego źródła
     assert a.team_id != b.team_id
 
 
 def test_fuzzy_match_flags_review(db):
     m = TeamMatcher(db)
-    a = resolve(db, m, "oddspapi", "PL", "Crystal Palace")
-    b = resolve(db, m, "the_odds_api", "PL", "Crystal Palace London")
+    a = resolve(db, m, "openligadb", "PL", "Crystal Palace")
+    b = resolve(db, m, "openfootball", "PL", "Crystal Palace London")
     assert b.team_id == a.team_id and b.method == "fuzzy"
     assert b.needs_review == (b.score < 95)
 
 
 def test_cup_matches_domestic_team_by_exact_source_name(db):
     m = TeamMatcher(db)
-    dom = resolve(db, m, "football_data_org", "PL", "Arsenal FC")
-    cup = resolve(db, m, "football_data_org", "CL", "Arsenal FC", is_cup=True)
+    dom = resolve(db, m, "international", "PL", "Arsenal FC")
+    cup = resolve(db, m, "international", "CL", "Arsenal FC", is_cup=True)
     assert cup.team_id == dom.team_id and cup.method == "exact"
 
 
 def test_display_name_uses_highest_priority_source(db):
     m = TeamMatcher(db)
     t = resolve(db, m, "football_data_csv", "PL", "Man United")
-    resolve(db, m, "football_data_org", "PL", "Manchester United FC")
-    resolve(db, m, "oddspapi", "PL", "Manchester United")
-    assert db.query_one("SELECT name FROM teams WHERE id = ?", (t.team_id,))["name"] == "Manchester United"
+    resolve(db, m, "openfootball", "PL", "Manchester United FC")      # pełna nazwa ma pierwszeństwo przed skrótem
+    resolve(db, m, "international", "PL", "Manchester Utd")
+    assert db.query_one("SELECT name FROM teams WHERE id = ?", (t.team_id,))["name"] == "Manchester United FC"
+
+
+def test_club_name_variants_join_names_fuzzy_matching_cannot(db):
+    m = TeamMatcher(db)
+    with db.transaction() as conn:
+        conn.executemany("INSERT INTO club_names(country, variant, canonical) VALUES ('Brazylia', ?, 'CA Mineiro')",
+                         [(normalize("CA Mineiro"),), (normalize("Atletico-MG"),), (normalize("Atlético Mineiro"),)])
+    csv = resolve(db, m, "football_data_csv", "BRA", "Atletico-MG", country="Brazylia")
+    of = resolve(db, m, "openfootball", "BRA", "CA Mineiro", country="Brazylia")
+    other = resolve(db, m, "openfootball", "BRA", "Atletico Paranaense", country="Brazylia")
+    assert of.team_id == csv.team_id and of.method == "seed"
+    assert other.team_id != csv.team_id           # inny klub z listy – nie łączymy „na podobieństwo”
 
 
 def test_manual_alias_correction(db):
     m = TeamMatcher(db)
-    a = resolve(db, m, "the_odds_api", "EKS", "Legia Warszawa")
-    wrong = resolve(db, m, "oddspapi", "EKS", "KP Legia")
+    a = resolve(db, m, "openfootball", "EKS", "Legia Warszawa")
+    wrong = resolve(db, m, "openligadb", "EKS", "KP Legia")
     assert wrong.team_id != a.team_id
-    m.set_alias("oddspapi", "EKS", "KP Legia", a.team_id)
-    assert resolve(db, m, "oddspapi", "EKS", "KP Legia").team_id == a.team_id
+    m.set_alias("openligadb", "EKS", "KP Legia", a.team_id)
+    assert resolve(db, m, "openligadb", "EKS", "KP Legia").team_id == a.team_id
 
 
 # -- repozytorium meczów -------------------------------------------------------------------
 def test_same_match_from_two_sources_is_merged(db):
     r = repo(db)
-    first = r.save_records([rec("oddspapi", "1", "Legia Warszawa", "Lech Poznan")])[0]
-    second = r.save_records([rec("the_odds_api", "abc", "Legia Warsaw", "Lech Poznań",
+    first = r.save_records([rec("openligadb", "1", "Legia Warszawa", "Lech Poznan")])[0]
+    second = r.save_records([rec("openfootball", "abc", "Legia Warsaw", "Lech Poznań",
                                  kickoff=KICK + timedelta(minutes=30))])[0]
     assert first.created and not second.created and first.match_id == second.match_id
     assert db.query_one("SELECT COUNT(*) FROM matches")[0] == 1
-    assert r.source_id(first.match_id, "the_odds_api")[0] == "abc"
+    assert r.source_id(first.match_id, "openfootball")[0] == "abc"
 
 
 def test_finished_status_is_not_downgraded(db):
     r = repo(db)
-    mid = r.save_records([rec("football_data_org", "9", "Arsenal FC", "Chelsea FC", league="PL",
+    mid = r.save_records([rec("international", "9", "Arsenal FC", "Chelsea FC", league="PL",
                               status=FINISHED, hg=2, ag=1)])[0].match_id
-    r.save_records([rec("the_odds_api", "x", "Arsenal", "Chelsea", league="PL")])
+    r.save_records([rec("openfootball", "x", "Arsenal", "Chelsea", league="PL")])
     row = db.query_one("SELECT status, home_goals, away_goals FROM matches WHERE id = ?", (mid,))
     assert (row["status"], row["home_goals"], row["away_goals"]) == (FINISHED, 2, 1)
 
@@ -139,10 +151,10 @@ def test_odds_upsert_and_view(db):
     r = repo(db)
     quotes = [OddsQuote("unibet_eu", "1X2", "H", 2.0), OddsQuote("pinnacle", "1X2", "H", 2.2),
               OddsQuote("unibet_eu", "OU", "O", 1.9, line=2.5)]
-    mid = r.save_records([rec("the_odds_api", "e1", "Legia Warsaw", "Lech Poznań", odds=quotes)])[0].match_id
-    r.save_records([rec("the_odds_api", "e1", "Legia Warsaw", "Lech Poznań",
+    mid = r.save_records([rec("openfootball", "e1", "Legia Warsaw", "Lech Poznań", odds=quotes)])[0].match_id
+    r.save_records([rec("openfootball", "e1", "Legia Warsaw", "Lech Poznań",
                         odds=[OddsQuote("unibet_eu", "1X2", "H", 2.1)])])  # aktualizacja kursu
-    r.save_records([rec("oddspapi", "f1", "Legia Warszawa", "Lech Poznan",
+    r.save_records([rec("openligadb", "f1", "Legia Warszawa", "Lech Poznan",
                         odds=[OddsQuote("superbet.pl", "1X2", "H", 1.95)])])
     view = odds_view(r.odds_for_match(mid), "superbet")
     assert view.bookmaker[("1X2", "H", 0.0)] == 1.95
@@ -155,11 +167,11 @@ def test_odds_upsert_and_view(db):
 
 def test_merge_teams_dedupes_matches(db):
     r = repo(db)
-    a = r.save_records([rec("the_odds_api", "1", "Legia Warszawa", "Lech Poznan")])[0].match_id
-    b = r.save_records([rec("oddspapi", "2", "KP Legia", "Lech Poznan")])[0].match_id
+    a = r.save_records([rec("openfootball", "1", "Legia Warszawa", "Lech Poznan")])[0].match_id
+    b = r.save_records([rec("openligadb", "2", "KP Legia", "Lech Poznan")])[0].match_id
     assert a != b  # nieznany wariant nazwy -> osobna drużyna i zdublowany mecz
     legia = db.query_one("SELECT home_team_id FROM matches WHERE id = ?", (a,))["home_team_id"]
     wrong = db.query_one("SELECT home_team_id FROM matches WHERE id = ?", (b,))["home_team_id"]
     assert r.merge_teams(legia, wrong) == 1
     assert db.query_one("SELECT COUNT(*) FROM matches")[0] == 1
-    assert r.source_id(a, "oddspapi")[0] == "2"
+    assert r.source_id(a, "openligadb")[0] == "2"

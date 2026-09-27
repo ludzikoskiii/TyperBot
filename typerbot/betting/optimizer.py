@@ -9,7 +9,8 @@ Szukamy zestawu typów, dla którego:
   * kupon jest najlepszy „przy tym samym kursie łącznym”: maksymalizujemy
         Σ log(p·kurs) − kara·liczba zdarzeń,
     czyli szansę trafienia w przeliczeniu na kurs (przy równym kursie – większa szansa),
-    a przy remisie mniej zdarzeń (każde zdarzenie to kolejna marża bukmachera).
+    a przy remisie mniej zdarzeń (każde zdarzenie to kolejna marża bukmachera);
+    typ z kursem szacunkowym ma dodatkową małą karę – przy podobnej szansie wygrywa prawdziwy kurs.
 
 Filtry typów zależą od trybu:
   * „probability” (najwyższa szansa trafienia) – tylko typy, w których model i rynek są
@@ -35,12 +36,13 @@ from typerbot.config.settings import CouponSettings
 STEP = 0.005        # rozdzielczość log-kursu (~0,5% kursu)
 NEG = -1e18
 LEG_PENALTY = 0.02  # ~2% „szansy w przeliczeniu na kurs” za każde dodatkowe zdarzenie – przy remisie mniej zdarzeń
+ESTIMATED_PENALTY = 0.03   # kurs szacunkowy (u bukmachera może być inny) – prawdziwy kurs ma pierwszeństwo
 
 OverlapLimit = tuple[frozenset[int], int]   # (mecze wcześniejszego kuponu, max wspólnych)
 
 
 def _score(c: Candidate) -> float:
-    return math.log(c.probability) + math.log(c.odds) - LEG_PENALTY
+    return math.log(c.probability) + math.log(c.odds) - LEG_PENALTY - (ESTIMATED_PENALTY if c.estimated_odds else 0.0)
 
 
 def agrees(c: Candidate, cfg: CouponSettings) -> bool:
@@ -57,7 +59,7 @@ def eligible(candidates: list[Candidate], cfg: CouponSettings,
         if (c.match_id in exclude_matches or c.key[0] not in cfg.markets or c.probability <= 0
                 or c.probability < cfg.min_probability or not 1.01 <= c.odds <= hi):
             continue
-        if not cfg.allow_estimated_odds and c.estimated_odds:
+        if c.estimated_odds and cfg.estimated_odds != "always":   # 'fallback' – drugie podejście w generatorze
             continue
         if cfg.mode == "value":
             if c.value <= 0:

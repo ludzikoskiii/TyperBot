@@ -1,7 +1,7 @@
 """Znane warianty nazw drużyn w różnych źródłach.
 
-Każda grupa to nazwy tego samego klubu (football-data.org, API-Football,
-The Odds API, football-data.co.uk). Nazwy są porównywane po normalizacji,
+Każda grupa to nazwy tego samego klubu w różnych źródłach (football-data.co.uk,
+openfootball, OpenLigaDB i dawne źródła). Nazwy są porównywane po normalizacji,
 więc wielkość liter, polskie znaki i dopiski typu "FC" nie mają znaczenia.
 Grupy zapobiegają też błędnym dopasowaniom (np. Paris FC ≠ Paris SG).
 """
