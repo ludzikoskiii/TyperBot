@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from typerbot.config.settings import SettingsStore
+from typerbot.config.settings import ModelSettings, SettingsStore
 from typerbot.data.db import Database
 from typerbot.data.records import to_iso
 from typerbot.model.data import load_matches
@@ -47,8 +47,8 @@ class PredictionService:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.model: FittedModel | None = None
 
-    def fit(self, at: datetime | None = None) -> FittedModel | None:
-        settings = self.settings_store.load().model
+    def fit(self, at: datetime | None = None, settings: ModelSettings | None = None) -> FittedModel | None:
+        settings = settings or self.settings_store.load().model
         table = load_matches(self.db)
         self.model = FittedModel.fit(table, at or self._now(), settings) if len(table) else None
         return self.model

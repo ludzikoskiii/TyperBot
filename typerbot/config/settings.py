@@ -25,6 +25,7 @@ class ModelSettings:
     regularization: float = 10.0      # ściąganie siły drużyn do średniej ligi (mniej = model pewniejszy siebie)
     new_team_prior: float = -0.15     # startowa siła beniaminka (poniżej średniej ligi)
     max_goals: int = 10
+    model_weight: float = 0.3         # udział modelu w prognozie; reszta to rynek (kursy bez marży)
 
 
 @dataclass
@@ -53,11 +54,16 @@ class CouponSettings:
     max_events: int = 6
     min_probability: float = 0.55
     mode: str = "probability"         # 'probability' | 'value'
-    date_range: str = "3days"         # 'today' | 'tomorrow' | '3days' | 'custom'
+    date_range: str = "days"          # 'today' | 'tomorrow' | 'days' (najbliższe X dni) | 'custom'
     days_ahead: int = 3
+    date_from: str = ""               # zakres własny (RRRR-MM-DD), gdy date_range == 'custom'
+    date_to: str = ""
+    leagues: list[str] = field(default_factory=list)   # puste = wszystkie włączone ligi
     markets: list[str] = field(default_factory=lambda: list(MARKETS))
     include_low_data: bool = False
     min_difference: float = 0.5      # alternatywne kupony różnią się min. połową zdarzeń
+    alternatives: int = 3
+    stake: float = 10.0               # stawka do wyliczenia wygranej i podatku od wygranej
 
 
 @dataclass

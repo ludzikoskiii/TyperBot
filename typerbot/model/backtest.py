@@ -24,6 +24,7 @@ import numpy as np
 
 from typerbot.betting.coupon import Candidate, coupon_odds
 from typerbot.betting.optimizer import optimize
+from typerbot.betting.evaluation import fair_probabilities
 from typerbot.betting.odds import payout, remove_margin
 from typerbot.betting.settlement import settle
 from typerbot.config.settings import CouponSettings, ModelSettings, TaxSettings
@@ -66,11 +67,17 @@ class EvalRow:
     t: float
     hg: int
     ag: int
-    probs: dict[Key, float]
+    probs: dict[Key, float]             # model
     market: dict[Key, float]            # prawdopodobieństwa rynku (kursy zamknięcia bez marży)
     bet_odds: dict[Key, float]          # kursy użyte w symulacji
     estimated: set[Key]                 # kursy wyliczone (np. podwójna szansa)
     low_data: bool
+    market_pre: dict[Key, float] = field(default_factory=dict)   # rynek w chwili zakładu (kursy przedmeczowe)
+    used: dict[Key, float] = field(default_factory=dict)         # prognoza: mieszanka model + rynek
+
+    def __post_init__(self) -> None:
+        if not self.used:
+            self.used = dict(self.probs)
 
     def result(self, key: Key) -> int | None:
         return settle(key[0], key[1], key[2], self.hg, self.ag)
@@ -230,7 +237,8 @@ def run_backtest(db: Database, config: BacktestConfig, model_settings: ModelSett
             fits += 1
             previous = model
             for i in idx:
-                rows.append(_evaluate(table, i, league, model, odds.get(int(table.match_id[i]), {}), config))
+                rows.append(_evaluate(table, i, league, model, odds.get(int(table.match_id[i]), {}), config,
+                                      model_settings.model_weight))
     result = _summarize(rows, config, model_settings, coupon_settings, tax)
     result.fits, result.skipped_weeks, result.seconds = fits, skipped, time.time() - started
     result.notes = notes + result.notes
@@ -275,7 +283,7 @@ def _fair(prices: dict[Key, float], keys: list[Key], method: str) -> dict[Key, f
 
 
 def _evaluate(table: MatchTable, i: int, league: str, model: FittedModel,
-              odds: dict[str, list[dict]], config: BacktestConfig) -> EvalRow:
+              odds: dict[str, list[dict]], config: BacktestConfig, model_weight: float = 1.0) -> EvalRow:
     pred = model.predict(int(table.home_id[i]), int(table.away_id[i]), league)
     close = odds_view(odds.get("close") or odds.get("pre") or []).average
     pre = odds_view(odds.get(config.bet_odds) or odds.get("close") or odds.get("pre") or []).average
@@ -297,10 +305,13 @@ def _evaluate(table: MatchTable, i: int, league: str, model: FittedModel,
             if key not in bet:
                 bet[key] = round(1.0 / (p * margin), 2) * haircut
                 estimated.add(key)
+    market_pre = fair_probabilities(pre, config.margin_method)
+    w = min(max(model_weight, 0.0), 1.0)
+    used = {k: (w * p + (1 - w) * market_pre[k]) if k in market_pre else p for k, p in pred.probs.items()}
     return EvalRow(
         match_id=int(table.match_id[i]), league=league, season=int(table.season[i]), t=float(table.t[i]),
         hg=int(table.hg[i]), ag=int(table.ag[i]), probs=pred.probs, market=market, bet_odds=bet,
-        estimated=estimated, low_data=pred.low_data,
+        estimated=estimated, low_data=pred.low_data, market_pre=market_pre, used=used,
     )
 
 
@@ -398,9 +409,9 @@ def _summarize(rows: list[EvalRow], config: BacktestConfig, model: ModelSettings
         # Jeden zakład na mecz: typ z najwyższą wartością, o ile przekracza próg.
         best: tuple[float, Key] | None = None
         for key, odds in r.bet_odds.items():
-            if key in r.estimated or key not in r.probs or key[0] not in coupon_cfg.markets:
+            if key in r.estimated or key not in r.used or key[0] not in coupon_cfg.markets:
                 continue
-            edge = r.probs[key] * odds - 1.0
+            edge = r.used[key] * odds - 1.0
             if edge > config.value_threshold and (best is None or edge > best[0]):
                 best = (edge, key)
         if best is None:
@@ -412,7 +423,7 @@ def _summarize(rows: list[EvalRow], config: BacktestConfig, model: ModelSettings
         bucket = next(label for label, upper in EDGE_BUCKETS if best[0] < upper)
         for stats in (singles, by_market[key[0]], by_league[r.league], by_edge[bucket]):
             stats.add(config.stake, odds, hit, returned)
-        if r.probs[key] * odds * tax_factor > 1.0:
+        if r.used[key] * odds * tax_factor > 1.0:
             positive.add(config.stake, odds, hit, returned)
         equity_s.append((_date(r.t), round(singles.profit, 2)))
 
@@ -424,9 +435,9 @@ def _summarize(rows: list[EvalRow], config: BacktestConfig, model: ModelSettings
         weeks[_week_start(r.t)].append(r)
     for week, wrows in sorted(weeks.items()):
         cands = [
-            Candidate(r.match_id, key, r.probs[key], odds, r.league, key in r.estimated)
+            Candidate(r.match_id, key, r.used[key], odds, r.league, key in r.estimated)
             for r in wrows if config.include_low_data or not r.low_data
-            for key, odds in r.bet_odds.items() if key in r.probs
+            for key, odds in r.bet_odds.items() if key in r.used
         ]
         chosen = optimize(cands, coupon_cfg)
         if not chosen:
@@ -460,13 +471,15 @@ def _summarize(rows: list[EvalRow], config: BacktestConfig, model: ModelSettings
 
 
 def _blend_analysis(rows: list[EvalRow]) -> list[tuple[float, float]]:
-    """Log-loss 1X2 dla mieszanki w·model + (1−w)·rynek – ile model wnosi ponad kursy."""
+    """Log-loss 1X2 dla mieszanki w·model + (1−w)·rynek (kursy z chwili zakładu) –
+    ile model wnosi ponad kursy. Najlepsze w to sugerowany „udział modelu”."""
     keys = MARKET_KEYS["1X2"]
     model, market, outcome = [], [], []
     for r in rows:
-        if all(k in r.probs and k in r.market for k in keys):
+        mk = r.market_pre if all(k in r.market_pre for k in keys) else r.market
+        if all(k in r.probs and k in mk for k in keys):
             model.append([r.probs[k] for k in keys])
-            market.append([r.market[k] for k in keys])
+            market.append([mk[k] for k in keys])
             outcome.append([r.result(k) for k in keys].index(1))
     if not model:
         return []

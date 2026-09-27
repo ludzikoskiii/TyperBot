@@ -11,6 +11,8 @@
   python -m typerbot prognozy [--dni 3]   prognozy modelu dla nadchodzących meczów
   python -m typerbot backtest [--ligi PL,EKS] [--sezony 2023,2024,2025]
   python -m typerbot strojenie [--zapisz] dobór parametrów modelu na historii
+  python -m typerbot typy [--dni 3] [--value]   ocena typów (prognoza, kurs, EV, value)
+  python -m typerbot kupon [--kurs 5] [--dni 3] [--tryb value] [--wymien A2 --na 3]
 """
 
 from __future__ import annotations
@@ -172,6 +174,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     _out()
     print_review(service)
     _predict(db, 4, now=now)
+    _demo_coupons(db, now)
     if args.backtest:
         _backtest(db, args, current=service.current_season())
     db.close()
@@ -234,6 +237,21 @@ def cmd_csv(args: argparse.Namespace) -> int:
     service.settings_store.save(settings)
     _out("Import CSV z football-data.co.uk: " + ("WŁĄCZONY" if settings.sync.csv_import else "wyłączony"))
     return 0
+
+
+def _demo_coupons(db: Database, now: datetime) -> None:
+    from typerbot.cli_coupons import print_coupon, print_selections
+    from typerbot.services.coupons import CouponService
+
+    service = CouponService(db, now=lambda: now)
+    cfg = service.settings().coupon
+    cfg.days_ahead = 7
+    _out()
+    print_selections(service, cfg, only_value=True)
+    coupons = service.generate(cfg)
+    _out(f"\nGenerator: {len(coupons)} kupony o kursie {cfg.target_odds:.2f} ±{cfg.tolerance:.0%} (mecze z 7 dni)")
+    for letter, coupon in zip("ABC", coupons):
+        print_coupon(coupon, letter)
 
 
 def _predict(db: Database, days: int, now: datetime | None = None) -> None:
@@ -327,16 +345,40 @@ def cmd_tune(args: argparse.Namespace) -> int:
         _out(f"  {m.last_matches:>6}{m.half_life_days:>10g}{m.regularization:>10g}{r.log_loss:>14.4f}{r.brier:>8.4f}"
              f"{100 * r.ece:>10.1f}pp{r.ou_log_loss:>9.4f}{mark}")
     best = results[0].settings
+    weight = results[0].best_model_weight
+    if weight is not None:
+        _out(f"Najlepszy udział modelu w prognozie (mieszanka z rynkiem): {weight:.0%} "
+             f"(log-loss {results[0].blend_log_loss:.4f})"
+             + (" – model nie wnosi informacji ponad kursy" if weight == 0 else ""))
     if args.zapisz:
         settings.model.last_matches = best.last_matches
         settings.model.half_life_days = best.half_life_days
         settings.model.regularization = best.regularization
+        if weight is not None:
+            settings.model.model_weight = weight
         store.save(settings)
         _out(f"Zapisano: {best.last_matches} meczów, półokres {best.half_life_days:g} dni, "
-             f"regularyzacja {best.regularization:g}.")
+             f"regularyzacja {best.regularization:g}"
+             + (f", udział modelu {weight:.0%}." if weight is not None else "."))
     else:
         _out("Aby zapisać najlepsze ustawienia: python -m typerbot strojenie --zapisz")
     return 0
+
+
+def cmd_selections(args: argparse.Namespace) -> int:
+    from typerbot.cli_coupons import coupon_settings_from_args, print_selections
+    from typerbot.services.coupons import CouponService
+
+    service = CouponService(Database(db_path()))
+    print_selections(service, coupon_settings_from_args(service.settings().coupon, args), only_value=args.value)
+    return 0
+
+
+def cmd_coupon(args: argparse.Namespace) -> int:
+    from typerbot.cli_coupons import run_coupon_command
+
+    sync = _real_service() if args.dociagnij else None
+    return run_coupon_command(sync.db if sync else Database(db_path()), args, sync_service=sync)
 
 
 def cmd_predict(args: argparse.Namespace) -> int:
@@ -399,6 +441,23 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("backtest", help="test modelu na historycznych sezonach")
     _add_backtest_args(p)
     p.set_defaults(func=cmd_backtest)
+
+    from typerbot.cli_coupons import add_coupon_args
+
+    p = sub.add_parser("typy", help="ocena typów: prognoza, kurs, implikowane, EV, value")
+    add_coupon_args(p)
+    p.add_argument("--value", action="store_true", help="pokaż tylko typy value")
+    p.set_defaults(func=cmd_selections)
+
+    p = sub.add_parser("kupon", help="generator kuponów o zadanym kursie (3 alternatywy)")
+    add_coupon_args(p)
+    p.add_argument("--wymien", help="zdarzenie do wymiany, np. A2 (kupon A, pozycja 2)")
+    p.add_argument("--na", type=int, help="numer zamiennika z listy")
+    p.add_argument("--kurs-reczny", action="append", help="kurs z oferty bukmachera, np. A2=1,95")
+    p.add_argument("--dociagnij", action="store_true", help="dociągnij kursy BTTS/DC dla najlepszych meczów")
+    p.add_argument("--dociagnij-ile", type=int, default=10)
+    p.add_argument("--krotko", action="store_true", help="bez uzasadnień")
+    p.set_defaults(func=cmd_coupon)
 
     p = sub.add_parser("strojenie", help="dobór parametrów modelu na historii (siatka + backtest)")
     p.add_argument("--ligi")

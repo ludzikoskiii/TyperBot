@@ -28,6 +28,8 @@ class TuningResult:
     ece: float
     ou_log_loss: float
     market_log_loss: float | None
+    best_model_weight: float | None = None   # najlepszy udział modelu w mieszance z rynkiem
+    blend_log_loss: float | None = None
 
 
 def tune(db: Database, config: BacktestConfig, base: ModelSettings, grid: dict[str, list] | None = None,
@@ -42,6 +44,7 @@ def tune(db: Database, config: BacktestConfig, base: ModelSettings, grid: dict[s
             progress(i, len(combos))
         res = run_backtest(db, config, settings, CouponSettings(), TaxSettings())
         m = res.metrics["1X2"]
+        best_w, best_ll = min(res.blend, key=lambda x: x[1]) if res.blend else (None, None)
         results.append(TuningResult(settings, m.log_loss, m.brier, res.ece["1X2"], res.metrics["OU"].log_loss,
-                                    m.market_log_loss))
+                                    m.market_log_loss, best_w, best_ll))
     return sorted(results, key=lambda r: r.log_loss)

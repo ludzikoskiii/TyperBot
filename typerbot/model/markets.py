@@ -43,4 +43,4 @@ def most_likely_score(m: np.ndarray) -> tuple[int, int, float]:
 def label(key: Key) -> str:
     market, sel, line = key
     text = SELECTION_LABELS.get((market, sel), f"{market} {sel}")
-    return f"{text} {line:g}" if market == "OU" else text
+    return f"{text} {line:g}".replace(".", ",") if market == "OU" else text

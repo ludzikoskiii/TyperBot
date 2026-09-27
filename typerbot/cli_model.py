@@ -34,7 +34,8 @@ def _money(x: float) -> str:
 def print_model_settings(m: ModelSettings) -> None:
     _out(f"Model: Dixon-Coles{' (z korektą ρ)' if m.dixon_coles else ''}, ostatnie {m.last_matches} meczów drużyny, "
          f"półokres wygaszania {m.half_life_days:g} dni, udział xG {m.xg_weight:.0%}, "
-         f"regularyzacja {m.regularization:g}, „mało danych” < {m.min_matches} meczów w roku")
+         f"regularyzacja {m.regularization:g}, „mało danych” < {m.min_matches} meczów w roku, "
+         f"udział modelu w prognozie {m.model_weight:.0%} (reszta: rynek)")
 
 
 def print_predictions(preds: list[MatchPrediction], summary: dict | None = None) -> None:
@@ -100,7 +101,7 @@ def print_backtest(res: BacktestResult, coupon: CouponSettings) -> None:
     tax = "pokrywa bukmacher" if res.tax.bookmaker_pays_tax else f"{res.tax.stake_tax:.0%} od stawki"
     _out(f"\n3) WYNIK FINANSOWY – stawka {cfg.stake:.0f} zł, podatek: {tax}"
          + (f", kursy obniżone o {cfg.odds_haircut:.0%}" if cfg.odds_haircut else ""))
-    _out(f"  Pojedyncze typy „value” (p·kurs − 1 > {cfg.value_threshold:.0%}, max 1 na mecz): {s.bets} zakładów, "
+    _out(f"  Pojedyncze typy „value” (prognoza·kurs − 1 > {cfg.value_threshold:.0%}, max 1 na mecz): {s.bets} zakładów, "
          f"trafność {_pct(s.hit_rate)}, śr. kurs {s.avg_odds:.2f}, wynik {_money(s.profit)}, ROI {_pct(s.roi)}")
     for label, group in (("wg rynku", res.singles_by_market), ("wg ligi", res.singles_by_league),
                          ("wg przewagi modelu nad kursem", res.singles_by_edge)):
@@ -122,7 +123,7 @@ def print_backtest(res: BacktestResult, coupon: CouponSettings) -> None:
         market_txt = f", rynek {_pct(sum(mk) / len(mk))}" if mk else ""
         _out(f"    {c.bets} kuponów, trafione {c.hits} ({_pct(c.hit_rate)}), śr. kurs {c.avg_odds:.2f}, "
              f"wynik {_money(c.profit)}, ROI {_pct(c.roi)}")
-        _out(f"    szacowana szansa trafienia kuponu: model {_pct(avg_p)}{market_txt}, faktycznie {_pct(c.hit_rate)}")
+        _out(f"    szacowana szansa trafienia kuponu: prognoza {_pct(avg_p)}{market_txt}, faktycznie {_pct(c.hit_rate)}")
     else:
         _out("    brak kuponów spełniających warunki")
     if res.blend:

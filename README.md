@@ -14,8 +14,8 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 |---|---|---|
 | 1 | Źródła danych, pobieranie, baza SQLite, cache, limity API | **gotowy** |
 | 2 | Model prognoz (Dixon-Coles), backtest, strojenie parametrów | **gotowy** |
-| 3 | Ocena typów (marża, podatek, EV) i generator kuponu | następny (rdzeń optymalizatora już jest) |
-| 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | – |
+| 3 | Ocena typów (marża, podatek, EV) i generator kuponu | **gotowy** |
+| 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | następny |
 | 5 | Kontrola budżetu, dopracowanie, plik .exe | – |
 
 Do czasu interfejsu graficznego (etap 4) aplikację obsługuje się z wiersza poleceń.
@@ -72,6 +72,13 @@ python -m typerbot prognozy --dni 3     # prognozy modelu dla nadchodzących mec
 python -m typerbot backtest             # test modelu na 3 ostatnich zakończonych sezonach
 python -m typerbot backtest --ligi PL,EKS --sezony 2023,2024,2025 --tryb value --kurs 3
 python -m typerbot strojenie --zapisz   # dobór parametrów modelu na Twojej historii
+python -m typerbot typy --dni 3 --value # ocena typów: prognoza, kurs, implikowane, EV (★ = value)
+python -m typerbot kupon                # 3 kupony wg ustawień (domyślnie kurs 5,00 ±10%, 3 dni)
+python -m typerbot kupon --jutro --kurs 3 --tryb value --ligi PL,EKS --rynki 1X2,DC --stawka 20
+python -m typerbot kupon --wymien A2    # zamienniki dla 2. zdarzenia kuponu A
+python -m typerbot kupon --wymien A2 --na 3        # wymiana i przeliczenie kuponu
+python -m typerbot kupon --kurs-reczny A2=1,95     # kurs z oferty bukmachera
+python -m typerbot kupon --dociagnij    # najpierw kursy BTTS/podwójnej szansy dla najlepszych meczów
 ```
 
 Baza i logi: `%LOCALAPPDATA%\TyperBot\` (`typerbot.db`, `typerbot.log`).
@@ -126,6 +133,39 @@ Korekta ρ poprawia prawdopodobieństwa wyników 0:0, 1:0, 0:1 i 1:1.
 Z macierzy wyników (0–10 bramek) liczone są wszystkie rynki: 1X2, podwójna szansa,
 powyżej/poniżej 2,5 i obie strzelą.
 
+## Ocena typów i generator kuponu
+
+Dla każdego typu (1X2, podwójna szansa, powyżej/poniżej 2,5, obie strzelą) aplikacja pokazuje:
+
+| Kolumna | Znaczenie |
+|---|---|
+| Model | prawdopodobieństwo z modelu Dixona-Colesa |
+| Rynek | prawdopodobieństwo ze średnich kursów wielu bukmacherów po usunięciu marży |
+| **Prognoza** | `udział modelu × model + reszta × rynek` – tego używa ocena i generator |
+| Kurs | Superbet (OddsPapi); gdy brak – średnia rynkowa; „szacowany” = podwójna szansa wyliczona z 1X2 |
+| Implikowane | prawdopodobieństwo z kursu Superbet po usunięciu jego marży |
+| EV | `prognoza × kurs − 1` (przed podatkiem); **value** (★), gdy EV > 0 |
+| EV po podatku | to samo z 12% podatkiem – dla gry pojedynczej |
+
+Dlaczego mieszanka z rynkiem: backtest pokazał, że sam model przy kuponach systematycznie zawyża
+szansę trafienia (optymalizator wybiera typy, w których model najbardziej „nie zgadza się” z rynkiem –
+często są to jego błędy). Udział modelu dobiera `strojenie --zapisz` na Twoich danych
+(domyślnie 30%). Podatek od stawki płaci się raz za kupon, dlatego „value” pojedynczego typu jest
+liczone przed podatkiem, a **EV kuponu – po podatku** (12% od stawki i 10% od wygranej powyżej 2280 zł).
+
+Generator:
+- bierze mecze z zakresu dat (dziś / jutro / najbliższe X dni / własny zakres), z wybranych lig i rynków;
+- pomija typy poniżej minimalnego prawdopodobieństwa i drużyny „mało danych” (chyba że je dopuścisz);
+- wybiera **najwyżej jeden typ z meczu** i szuka kombinacji o kursie w zakresie, maksymalizując
+  szansę trafienia albo wartość (EV) – dokładnie, programowaniem dynamicznym;
+- układa **3 alternatywne kupony**, z których każdy ma co najmniej połowę innych meczów niż poprzednie;
+- przy kuponie pokazuje kurs przed i po podatku, szansę trafienia (prognoza, model, rynek), EV
+  i wygraną dla stawki, a przy każdym typie uzasadnienie: formę u siebie / na wyjeździe, średnie
+  bramek i xG, bilans bezpośrednich meczów, oczekiwane gole modelu oraz uwagi (beniaminek,
+  mało danych, różne ligi, kurs szacowany).
+
+Szansa trafienia kuponu zakłada niezależność meczów (jeden typ z meczu ogranicza zależności).
+
 ## Backtest – jak czytać wynik
 
 Backtest symuluje używanie aplikacji w przeszłości: **przed każdym tygodniem** model uczy się
@@ -137,8 +177,9 @@ sprawdza test automatyczny). Raport ma cztery części:
    odniesienia – jeśli model ma wyższy log-loss, to rynek prognozuje lepiej.
 2. **Kalibracja** – dla przedziałów 0–10%, 10–20%, … porównanie przewidywanej i faktycznej
    częstości; ECE to średni błąd w punktach procentowych.
-3. **Wynik finansowy** (po 12% podatku) – pojedyncze typy „value” (także z podziałem na rynki,
-   ligi i wielkość przewagi) oraz symulowane kupony o zadanym kursie (1 na tydzień).
+3. **Wynik finansowy** (po 12% podatku, z prognozą = mieszanka model + rynek z kursów przedmeczowych)
+   – pojedyncze typy „value” (także z podziałem na rynki, ligi i wielkość przewagi) oraz symulowane
+   kupony z tego samego optymalizatora co generator (1 na tydzień).
    Przy kuponach porównywana jest szansa trafienia wg modelu, wg rynku i faktyczna.
 4. **Model a rynek** – log-loss mieszanki „w·model + (1−w)·rynek”. Jeśli najlepsze jest 0% modelu,
    model nie wnosi nic ponad kursy, a jego „value” to głównie błędy.
@@ -148,7 +189,8 @@ historycznych kursów – te rynki mają ocenę trafności i kalibracji, BTTS be
 
 `python -m typerbot strojenie` sprawdza siatkę 36 ustawień (liczba meczów × półokres ×
 regularyzacja) na Twojej historii i wybiera najlepsze według log-loss (nie według zysku –
-zysk w backteście jest zbyt zaszumiony i łatwo go „przeuczyć”).
+zysk w backteście jest zbyt zaszumiony i łatwo go „przeuczyć”). Podaje też najlepszy udział
+modelu w mieszance z rynkiem; `--zapisz` zapisuje wszystko w ustawieniach.
 
 ## Struktura projektu
 
@@ -172,9 +214,12 @@ typerbot/
 ├── betting/
 │   ├── odds.py                 marża, prawdopodobieństwo implikowane, podatek, EV
 │   ├── settlement.py           rozstrzyganie typów
-│   ├── coupon.py, optimizer.py kandydaci i optymalizator kuponu (programowanie dynamiczne)
+│   ├── evaluation.py           ocena typów: prognoza, kurs referencyjny, implikowane, EV, value
+│   ├── rationale.py            uzasadnienia: forma, statystyki, bilans, liczby modelu
+│   ├── coupon.py, optimizer.py kandydaci i optymalizator kuponu (DP, alternatywy)
 ├── services/sync.py            synchronizacja z izolacją błędów źródeł
 ├── services/predict.py         prognozy nadchodzących meczów (zapis w bazie)
+├── services/coupons.py         generator kuponów, wymiana zdarzeń, kurs ręczny
 ├── demo/                       syntetyczny świat meczów i transport udający API
 └── cli.py                      polecenia wiersza poleceń
 tests/                          testy jednostkowe i integracyjne (pytest)
