@@ -15,8 +15,9 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 | 1 | Źródła danych, pobieranie, baza SQLite, cache, limity API | **gotowy** |
 | 2 | Model prognoz (Dixon-Coles), backtest, strojenie parametrów | **gotowy** |
 | 3 | Ocena typów (marża, podatek, EV) i generator kuponu | **gotowy** |
-| 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | **gotowy** |
+| 4 | Interfejs (3 zakładki: Kupony, Historia, Ustawienia), historia kuponów, statystyki | **gotowy** |
 | 5 | Dopracowanie, plik .exe | **gotowy** |
+| 6 | Kalibracja modelu na historii football-data.co.uk, nowy optymalizator kuponów | **gotowy** |
 
 ## Uruchomienie na Windows
 
@@ -46,8 +47,9 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
    **Ustawienia** (opis niżej) – uzupełniają terminarz i brakujące kursy.
    **Pierwsza synchronizacja trwa kilka minut** – pobiera 10 sezonów historii z plików football-data.co.uk
    (bez klucza). Postęp widać w pasku stanu na dole; kolejne odświeżenia trwają kilka sekund.
-5. W zakładce **Model (backtest)** kliknij **Strojenie parametrów**, a potem
+5. (opcjonalnie) W *Ustawienia → Model i backtest* kliknij **Strojenie parametrów**, a potem
    **Zapisz najlepsze ustawienia** – model i udział modelu w prognozie zostaną dobrane do Twoich danych.
+   Wartości domyślne są już skalibrowane (sekcja „Kalibracja modelu”).
 
    Tryb demo w wierszu poleceń (raport tekstowy):
 
@@ -69,13 +71,39 @@ test `TyperBot.exe --self-test`. Folder można skopiować na inny komputer z Win
 
 ## Interfejs
 
-| Zakładka | Co zawiera |
-|---|---|
-| **Mecze** | nadchodzące mecze z prognozą 1 / X / 2 / >2,5 / BTTS (paski), liczba typów value; po kliknięciu meczu – wszystkie typy (prognoza, model, rynek, kurs, implikowane, EV, EV po podatku; value na zielono) i opis: forma, średnie, bilans spotkań |
-| **Generator kuponu** | kurs docelowy i tolerancja, zakres dat (dziś / jutro / X dni / własny), liczba zdarzeń, min. prawdopodobieństwo, tryb, ligi, rynki → 3 kupony z kursem przed i po podatku, szansą trafienia (prognoza, model, rynek) i EV; uzasadnienie każdego typu; **Wymień zdarzenie…**, **Zmień kurs…** (kurs z oferty), **Usuń zdarzenie**; przycisk **Diagnostyka** |
-| **Historia** | wszystkie ułożone kupony (ten sam zestaw typów tylko raz) z wynikiem **trafiony / nietrafiony / w trakcie**, rozliczane automatycznie; szczegóły z wynikami meczów; podzakładka **Statystyki**: trafność kuponów i pojedynczych typów osobno dla rynków i lig, wynik w jednostkach (1 kupon = 1 jednostka), krzywa wyniku, miesiące |
-| **Model (backtest)** | skuteczność, kalibracja (wykres), wynik w jednostkach, mieszanka model + rynek i **strojenie** parametrów |
-| **Ustawienia** | klucze API, ligi (włączanie, dodawanie), rynki, model, kursy, podatek, pobieranie danych, limity API i szacowane zużycie, dopasowanie nazw drużyn |
+Trzy zakładki: **Kupony**, **Historia**, **Ustawienia**.
+
+**Kupony** – ekran główny:
+
+1. **Kurs docelowy** (duże pole, np. 5,00).
+2. Zakres: **Dziś** / **Jutro** / **Najbliższe 3 dni** / **Własny** (od–do).
+3. Duży przycisk **Generuj kupony** – obok pojawiają się do 3 kuponów, posortowane od najwyższej
+   szansy trafienia.
+
+Każdy kupon wygląda jak kupon u bukmachera: mecz (liga, godzina), typ, kurs (≈ i kolor ostrzegawczy =
+kurs szacunkowy), pasek prawdopodobieństwa i **jedno zdanie uzasadnienia** (np. „Arsenal wygrał 7 z 9 ostatnich
+meczów u siebie; model 64% i rynek 61%.”). Pod typami: **kurs łączny**, **kurs po podatku (−12%)**,
+**szansa trafienia** (i osobno model / rynek) oraz przycisk **Kopiuj kupon** (tekst do schowka;
+kupon zostaje oznaczony w Historii jako skopiowany). Menu **⋯** przy typie: wymień zdarzenie, wpisz
+kurs z oferty, usuń zdarzenie, szczegóły meczu.
+
+Wszystko inne jest w zwiniętej sekcji **Zaawansowane** (rozsądne wartości domyślne): tolerancja
+kursu, liczba zdarzeń (2–4), min. prawdopodobieństwo typu (40%), tryb (najwyższa szansa / tylko
+value), maks. różnica model–rynek (8 pkt), ligi, rynki, drużyny „mało danych”, kursy szacunkowe
+(domyślnie wyłączone) i **Zapisz jako domyślne**. Przycisk **Diagnostyka** pokazuje, skąd przyszły
+mecze i kursy i ile odpada na każdym filtrze. Przełącznik **Wszystkie mecze** po prawej pokazuje
+dawną zakładkę „Mecze”: prognozy 1 / X / 2 / >2,5 / BTTS i po kliknięciu wszystkie typy meczu
+(prognoza, model, rynek, kurs, EV, EV po podatku) z opisem formy, średnich i bilansu.
+
+**Historia** – wszystkie ułożone kupony (ten sam zestaw typów tylko raz) z wynikiem **trafiony /
+nietrafiony / w trakcie**, rozliczane automatycznie; szczegóły z wynikami meczów; filtr
+„Tylko skopiowane”. Podzakładka **Statystyki**: trafność kuponów i pojedynczych typów osobno dla
+rynków i lig, wynik w jednostkach (1 kupon = 1 jednostka), krzywa wyniku, miesiące.
+
+**Ustawienia** – trzy podzakładki: **Ogólne** (ligi, rynki, kursy i podatek), **Źródła danych**
+(klucze API, pobieranie, limity i szacowane zużycie, dopasowanie nazw drużyn), **Model i backtest**
+(parametry modelu, backtest ze skutecznością, kalibracją i wynikiem w jednostkach, mieszanka
+model + rynek, strojenie).
 
 Pasek stanu pokazuje każde źródło danych (zielona kropka = OK, w podpowiedzi szczegóły i zużycie limitu).
 Dane odświeżają się w tle przy starcie i co 3 godziny (przycisk **Odśwież dane** – od razu); przy okazji
@@ -175,9 +203,9 @@ dane z cache.
 siły ataku i obrony obu drużyn, przewagi własnego boiska i ogólnego poziomu bramek w lidze.
 Korekta ρ poprawia prawdopodobieństwa wyników 0:0, 1:0, 0:1 i 1:1.
 
-- **Okno danych:** N ostatnich meczów każdej drużyny (domyślnie 20).
-- **Wygaszanie:** mecz sprzed „półokresu” (domyślnie 180 dni) waży o połowę mniej.
-- **Regularyzacja:** siła drużyn jest łagodnie ściągana do średniej ligi (domyślnie 10).
+- **Okno danych:** N ostatnich meczów każdej drużyny (domyślnie 80 – w praktyce ok. 2 sezony).
+- **Wygaszanie:** mecz sprzed „półokresu” (domyślnie 365 dni) waży o połowę mniej.
+- **Regularyzacja:** siła drużyn jest łagodnie ściągana do średniej ligi (domyślnie 5).
   Bez tego model „wierzy” w przypadkowe serie i jest zbyt pewny siebie – backtest to pokazał
   (przy słabej regularyzacji typy „70–80%” trafiały w ok. 54%).
 - **„Mało danych”:** mniej niż 6 meczów w ostatnim roku albo beniaminek bez historii w lidze;
@@ -205,21 +233,77 @@ Dla każdego typu (1X2, podwójna szansa, powyżej/poniżej 2,5, obie strzelą) 
 Dlaczego mieszanka z rynkiem: backtest pokazał, że sam model przy kuponach systematycznie zawyża
 szansę trafienia (optymalizator wybiera typy, w których model najbardziej „nie zgadza się” z rynkiem –
 często są to jego błędy). Udział modelu dobiera `strojenie --zapisz` na Twoich danych
-(domyślnie 30%). Podatek od stawki płaci się raz za kupon, dlatego „value” pojedynczego typu jest
+(domyślnie **0%** – na 10 sezonach żaden udział modelu nie poprawił prognozy rynku, patrz
+„Kalibracja modelu”). Model dalej służy do filtra zgodności, uzasadnień i jako prognoza tam,
+gdzie nie ma kursów. Podatek od stawki płaci się raz za kupon, dlatego „value” pojedynczego typu jest
 liczone przed podatkiem, a **EV kuponu – po podatku** (12% od stawki).
 
 Generator:
 - bierze mecze z zakresu dat (dziś / jutro / najbliższe X dni / własny zakres), z wybranych lig i rynków;
 - pomija typy poniżej minimalnego prawdopodobieństwa i drużyny „mało danych” (chyba że je dopuścisz);
-- wybiera **najwyżej jeden typ z meczu** i szuka kombinacji o kursie w zakresie, maksymalizując
-  szansę trafienia albo wartość (EV) – dokładnie, programowaniem dynamicznym;
-- układa **3 alternatywne kupony**, z których każdy ma co najmniej połowę innych meczów niż poprzednie;
-- przy kuponie pokazuje kurs przed i po podatku, szansę trafienia (prognoza, model, rynek) i EV,
-  a przy każdym typie uzasadnienie: formę u siebie / na wyjeździe, średnie bramek, bilans
-  bezpośrednich meczów, oczekiwane gole modelu oraz uwagi (beniaminek, mało danych, różne ligi,
-  kurs szacunkowy).
+- w trybie „najwyższa szansa” bierze tylko typy, w których **model i rynek są zgodni** (różnica
+  ≤ 8 pkt proc.) – duża rozbieżność bez wyraźnego powodu to częściej błąd modelu niż okazja;
+  w trybie „value” – tylko typy z dodatnim EV;
+- kursy szacunkowe domyślnie **nie trafiają na kupon** (w backteście takie typy trafiały rzadziej,
+  niż zapowiadały) – można je dopuścić w „Zaawansowanych”;
+- **jeden typ z meczu** i żadnych typów zależnych: dwa mecze tej samej drużyny w zakresie dat
+  (np. liga i puchar) nie trafiają na jeden kupon;
+- szuka kombinacji o kursie w zakresie dokładnie (programowanie dynamiczne), maksymalizując
+  `Σ log(p · kurs) − 0,02 · liczba zdarzeń` – przy tym samym kursie łącznym wygrywa **wyższa szansa
+  trafienia**, a przy remisie **mniej zdarzeń** (każde zdarzenie to kolejna marża bukmachera);
+- układa **3 alternatywne kupony** (każdy ma co najmniej połowę innych meczów niż poprzednie),
+  posortowane od najwyższej szansy trafienia;
+- gdy kuponu nie da się ułożyć, pokazuje konkretny powód i podpowiedź (np. „za mało meczów z kursami
+  w zakresie – wydłuż zakres dat”).
 
-Szansa trafienia kuponu zakłada niezależność meczów (jeden typ z meczu ogranicza zależności).
+Szansa trafienia kuponu zakłada niezależność meczów (jeden typ z meczu i brak wspólnych drużyn
+ogranicza zależności).
+
+## Kalibracja modelu
+
+Dane: sezony 2014/15–2025/26 z plików football-data.co.uk dla Premier League, La Liga,
+Bundesligi, Serie A, Ligue 1 i Ekstraklasy (ok. 25 tys. meczów; dwa pierwsze sezony służą tylko
+jako historia do nauki) – wyniki i kursy zamknięcia Bet365 (w tym środowisku
+domena football-data.co.uk była zablokowana, więc użyto publicznej kopii tych samych plików
+z GitHuba, `xgabora/club-football-match-data-2000-2025`; aplikacja pobiera pliki bezpośrednio
+z football-data.co.uk). Procedura bez „podglądania”:
+
+1. **Strojenie** na sezonach 2021/22–2022/23 (siatka 64 ustawień, walk-forward co tydzień):
+   log-loss 1X2 modelu 1,0129 (stare 20 meczów / 180 dni / regularyzacja 10) → **0,9990**
+   (80 / 365 / 5). Rynek (kursy po usunięciu marży) ma 0,9814 – nadal lepiej.
+2. **Usuwanie marży:** metoda Shina minimalnie lepsza od proporcjonalnej (0,98137 wobec 0,98171)
+   – lepiej ujmuje przewagę faworytów.
+3. **Mieszanka model + rynek:** na każdym zbiorze najlepszy był udział modelu **0%** (każde
+   +10% modelu podnosi log-loss). Domyślny udział modelu to więc 0.
+4. **Sprawdzenie** na 8 innych sezonach (2016/17–2020/21 i 2023/24–2025/26, 16 111 meczów):
+
+| Miara (sezony testowe) | Przed | Po |
+|---|---|---|
+| Log-loss 1X2 modelu | 1,0057 | 0,9905 |
+| Log-loss 1X2 prognozy (tego używa generator) | 0,9754 | **0,9705** (= rynek) |
+| Błąd kalibracji prognozy (ECE) | 0,90 pkt proc. | **0,25 pkt proc.** |
+
+Symulowane kupony na tych samych sezonach (3 kupony na tydzień, kursy zamknięcia, zwrot po 12%
+podatku, 1 kupon = 1 jednostka):
+
+| Kurs docelowy | Przed: trafione (zapowiadane) | Przed: zwrot | Po: trafione (zapowiadane) | Po: zwrot | Zdarzeń na kuponie przed → po |
+|---|---|---|---|---|---|
+| 2 | 51,3% (52,4%) | −17,7% | 48,4% (48,1%) | **−16,0%** | 2,00 → 2,00 |
+| 3 | 31,0% (36,3%) | −25,3% | 30,9% (32,6%) | **−21,2%** | 2,14 → 2,00 |
+| 5 | 17,1% (22,0%) | −31,6% | 18,9% (19,8%) | **−21,9%** | 3,17 → 2,02 |
+| 10 | 8,0% (11,2%) | −36,2% | 9,7% (9,7%) | **−21,0%** | 4,50 → 3,02 |
+
+Co to znaczy:
+- zapowiadana szansa trafienia jest teraz **uczciwa** (różnica ≤ 2 pkt proc., wcześniej model
+  obiecywał do 5 pkt więcej, niż trafiało);
+- kupony mają mniej zdarzeń i średnio wyższy kurs w zakresie (np. 4,73 zamiast 4,54 przy celu 5),
+  bo każde zdarzenie to kolejna marża;
+- **wynik nadal jest ujemny** – marża bukmachera i 12% podatku są większe niż przewaga, którą da się
+  wyciągnąć z publicznych danych. Aplikacja układa możliwie najlepsze kupony, ale nie odwraca
+  matematyki zakładów.
+
+Po aktualizacji aplikacji zapisane ustawienia, które były starymi wartościami domyślnymi, zmieniają
+się jednorazowo na skalibrowane; ustawienia zmienione ręcznie zostają bez zmian.
 
 ## Backtest – jak czytać wynik
 
@@ -242,7 +326,7 @@ sprawdza test automatyczny). Raport ma cztery części:
 Kursy podwójnej szansy w danych historycznych są wyliczane z kursów 1X2, a dla BTTS nie ma
 historycznych kursów – te rynki mają ocenę trafności i kalibracji, BTTS bez wyniku finansowego.
 
-`python -m typerbot strojenie` sprawdza siatkę 36 ustawień (liczba meczów × półokres ×
+`python -m typerbot strojenie` sprawdza siatkę 27 ustawień (liczba meczów × półokres ×
 regularyzacja) na Twojej historii i wybiera najlepsze według log-loss (nie według zysku –
 zysk w backteście jest zbyt zaszumiony i łatwo go „przeuczyć”). Podaje też najlepszy udział
 modelu w mieszance z rynkiem; `--zapisz` zapisuje wszystko w ustawieniach.
@@ -307,7 +391,7 @@ typerbot/
 ├── services/register.py        historia wygenerowanych kuponów i automatyczne rozliczanie (w jednostkach)
 ├── services/stats.py           trafność kuponów i typów, wynik w jednostkach – miesiące, rynki, ligi
 ├── services/diagnostics.py     diagnostyka generatora: źródła, filtry, powód braku kuponu
-├── ui/                         interfejs PySide6: okno, 5 zakładek, wykresy, motyw, zadania w tle
+├── ui/                         interfejs PySide6: okno, 3 zakładki, wykresy, motyw, zadania w tle
 ├── demo/                       syntetyczny świat meczów i transport udający API
 └── cli.py                      polecenia wiersza poleceń
 packaging/                      konfiguracja PyInstaller (TyperBot.exe)

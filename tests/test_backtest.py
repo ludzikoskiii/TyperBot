@@ -15,7 +15,7 @@ from typerbot.model.predictor import FittedModel
 from typerbot.services.predict import PredictionService, key_to_str, str_to_key
 
 H, D, A = ("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0)
-O, U = ("OU", "O", 2.5), ("OU", "U", 2.5)
+O, U = ("OU", "O", 2.5), ("OU", "U", 2.5)  # noqa: E741
 
 
 @pytest.fixture(scope="module")

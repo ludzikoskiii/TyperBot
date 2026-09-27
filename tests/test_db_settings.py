@@ -1,7 +1,8 @@
+import json
 import threading
 
 from typerbot.config.secrets import MemorySecretStore, mask
-from typerbot.config.settings import Settings, SettingsStore
+from typerbot.config.settings import SETTINGS_VERSION, Settings, SettingsStore
 from typerbot.data.db import Database
 from typerbot.data.schema import SCHEMA_VERSION
 
@@ -46,6 +47,23 @@ def test_settings_ignore_unknown_and_bad_types():
     assert s.coupon.target_odds == 5.0  # zły typ -> wartość domyślna
     assert s.coupon.min_events == 3
     assert Settings.from_json("to nie jest json").coupon.target_odds == 5.0
+
+
+def test_old_settings_get_calibrated_defaults_once(db):
+    old = json.loads(Settings().to_json())
+    del old["version"]
+    old["model"].update(last_matches=20, half_life_days=180.0, regularization=10.0, model_weight=0.3)
+    old["odds"]["margin_method"] = "proportional"
+    old["coupon"].update(max_events=6, min_probability=0.6, target_odds=8.0)   # własne wartości zostają
+    db.execute("INSERT INTO settings(key, value) VALUES('app', ?)", (json.dumps(old),))
+    store = SettingsStore(db)
+    s = store.load()
+    assert (s.model.last_matches, s.model.half_life_days, s.model.regularization, s.model.model_weight) == (80, 365, 5, 0)
+    assert s.odds.margin_method == "shin" and s.coupon.max_events == 4
+    assert s.coupon.min_probability == 0.6 and s.coupon.target_odds == 8.0 and s.version == SETTINGS_VERSION
+    s.model.last_matches = 20          # po migracji wybór użytkownika jest trwały
+    store.save(s)
+    assert store.load().model.last_matches == 20
 
 
 def test_secret_store_and_mask():

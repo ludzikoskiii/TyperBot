@@ -15,11 +15,9 @@ from typerbot.services.sync import SyncReport
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
 from typerbot.ui.diagnostics_view import ProblemsDialog
-from typerbot.ui.tab_generator import GeneratorTab
+from typerbot.ui.tab_coupons import CouponsTab
 from typerbot.ui.tab_history import HistoryTab
-from typerbot.ui.tab_matches import MatchesTab
 from typerbot.ui.tab_settings import SettingsTab
-from typerbot.ui.tab_stats import StatsTab
 from typerbot.ui.widgets import label
 from typerbot.ui.workers import run_in_background
 
@@ -37,14 +35,11 @@ class MainWindow(QMainWindow):
         self.resize(1360, 860)
 
         self.tabs = QTabWidget()
-        self.matches = MatchesTab(ctx)
-        self.generator = GeneratorTab(ctx)
+        self.coupons = CouponsTab(ctx)
+        self.matches = self.coupons.matches          # „Wszystkie mecze” – widok w zakładce „Kupony”
         self.history = HistoryTab(ctx)
-        self.stats = StatsTab(ctx)
         self.settings = SettingsTab(ctx)
-        for widget, title in ((self.matches, "Mecze"), (self.generator, "Generator kuponu"),
-                              (self.history, "Historia"), (self.stats, "Model (backtest)"),
-                              (self.settings, "Ustawienia")):
+        for widget, title in ((self.coupons, "Kupony"), (self.history, "Historia"), (self.settings, "Ustawienia")):
             self.tabs.addTab(widget, title)
 
         self.banner = QFrame()

@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo
 from typerbot.betting.coupon import Candidate
 from typerbot.betting.evaluation import SelectionEval, evaluate_match
 from typerbot.betting.odds import odds_after_tax
-from typerbot.betting.optimizer import alternatives, eligible
-from typerbot.betting.rationale import build_rationale
+from typerbot.betting.optimizer import agrees, alternatives, eligible
+from typerbot.betting.rationale import build_rationale, one_liner
 from typerbot.config.settings import CouponSettings, Settings, SettingsStore
 from typerbot.data.db import Database
 from typerbot.data.repository import MatchRepository
@@ -57,6 +57,7 @@ class CouponLeg:
     match: MatchInfo
     selection: SelectionEval
     rationale: list[str] = field(default_factory=list)
+    summary: str = ""              # jedno zdanie uzasadnienia na kupon
 
     @property
     def key(self) -> Key:
@@ -194,25 +195,36 @@ class CouponService:
         return out
 
     # -- kupony ---------------------------------------------------------------------------------
-    def candidate_stages(self, cfg: CouponSettings) -> list[tuple[str, list[Candidate]]]:
-        """Kolejne filtry generatora i typy, które po nich zostają (to samo widzi diagnostyka)."""
+    def candidate_stages(self, cfg: CouponSettings) -> list[tuple[str, str, list[Candidate]]]:
+        """Kolejne filtry generatora (klucz, opis, typy po filtrze) – to samo widzi diagnostyka."""
         low = {mid for mid, (info, _) in self._evaluated.items() if info.low_data}
         with_odds = [Candidate(info.match_id, sel.key, sel.probability, sel.odds, info.league,
-                               sel.odds_source == "estimated")
+                               sel.odds_source == "estimated", sel.p_model, sel.p_market,
+                               (info.home_id, info.away_id))
                      for info, evals in self._evaluated.values() for sel in evals
                      if sel.odds is not None and sel.key[0] in cfg.markets]
-        stages = [("Z kursami na wybranych rynkach", with_odds)]
-        likely = [c for c in with_odds if c.probability >= cfg.min_probability]
-        stages.append((f"Z typem o szansie co najmniej {pct(cfg.min_probability)}", likely))
+        stages = [("odds", "Z kursami na wybranych rynkach", with_odds)]
+        cur = with_odds
+        if not cfg.allow_estimated_odds:
+            cur = [c for c in cur if not c.estimated_odds]
+            stages.append(("estimated", "Bez kursów szacunkowych", cur))
+        cur = [c for c in cur if c.probability >= cfg.min_probability]
+        stages.append(("prob", f"Z typem o szansie co najmniej {pct(cfg.min_probability)}", cur))
+        if cfg.mode == "value":
+            cur = [c for c in cur if c.value > 0]
+            stages.append(("value", "Tylko typy z przewagą (EV > 0)", cur))
+        else:
+            cur = [c for c in cur if agrees(c, cfg)]
+            stages.append(("agree", f"Model i rynek zgodni (różnica do {cfg.max_divergence * 100:.0f} pkt proc.)", cur))
         if not cfg.include_low_data:
-            likely = [c for c in likely if c.match_id not in low]
-            stages.append(("Bez drużyn z małą liczbą danych", likely))
+            cur = [c for c in cur if c.match_id not in low]
+            stages.append(("low", "Bez drużyn z małą liczbą danych", cur))
         hi = cfg.target_odds * (1 + cfg.tolerance)
-        stages.append((f"Kurs typu mieści się w kursie docelowym (do {num(hi)})", eligible(likely, cfg)))
+        stages.append(("cap", f"Kurs typu mieści się w kursie docelowym (do {num(hi)})", eligible(cur, cfg)))
         return stages
 
     def candidates(self, cfg: CouponSettings) -> list[Candidate]:
-        return self.candidate_stages(cfg)[-1][1]
+        return self.candidate_stages(cfg)[-1][2]
 
     def run(self, cfg: CouponSettings | None = None, *, evaluate: bool = True, secrets=None) -> GenerationResult:
         """Kupony wraz z diagnostyką: skąd są mecze, ile zostaje po filtrach i dlaczego nie ma kuponu."""
@@ -240,6 +252,7 @@ class CouponService:
         if with_rationale:
             leg.rationale = build_rationale(self.db, sel, info.as_dict(), info.lam_home, info.lam_away,
                                             self.settings(), info.flags)
+            leg.summary = one_liner(self.db, sel, info.as_dict(), info.lam_home, info.lam_away)
         return leg
 
     def _build(self, chosen: list[Candidate], cfg: CouponSettings) -> Coupon:
@@ -283,24 +296,28 @@ class CouponService:
     # -- ręczna zmiana -------------------------------------------------------------------------
     def swap_options(self, coupon: Coupon, match_id: int, cfg: CouponSettings | None = None,
                      limit: int = 15) -> list[SwapOption]:
-        """Zamienniki dla zdarzenia: inne typy z tego meczu i typy z meczów spoza kuponu."""
+        """Zamienniki dla zdarzenia: inne typy z tego meczu i typy z meczów spoza kuponu – te same filtry co
+        generator (zgodność modelu z rynkiem / przewaga, bez tej samej drużyny dwa razy), najlepsze na górze."""
         cfg = cfg or self.settings().coupon
         others = [leg for leg in coupon.legs if leg.match.match_id != match_id]
         base = math.prod(leg.selection.odds or 1.0 for leg in others)
         used = {leg.match.match_id for leg in others}
+        teams = {t for leg in others for t in (leg.match.home_id, leg.match.away_id)}
         current = next((leg.key for leg in coupon.legs if leg.match.match_id == match_id), None)
-        score = (lambda s: s.probability) if cfg.mode == "probability" else (lambda s: s.probability * (s.odds or 0))
         options = []
         for mid, (info, evals) in self._evaluated.items():
-            if mid in used or (info.low_data and not cfg.include_low_data):
+            if mid in used or (info.low_data and not cfg.include_low_data) or {info.home_id, info.away_id} & teams:
                 continue
             for sel in evals:
                 if sel.odds is None or (mid == match_id and sel.key == current):
                     continue
-                if sel.probability < cfg.min_probability:
+                cand = Candidate(mid, sel.key, sel.probability, sel.odds, info.league, sel.odds_source == "estimated",
+                                 sel.p_model, sel.p_market, (info.home_id, info.away_id))
+                if not eligible([cand], replace(cfg, target_odds=1e6, tolerance=0.0)):
                     continue
                 total = base * sel.odds
-                options.append((score(sel), SwapOption(CouponLeg(info, sel), total, coupon.target[0] <= total <= coupon.target[1])))
+                in_range = coupon.target[0] <= total <= coupon.target[1]
+                options.append((sel.probability * sel.odds, SwapOption(CouponLeg(info, sel), total, in_range)))
         options.sort(key=lambda x: (not x[1].in_range, -x[0]))
         return [o for _, o in options[:limit]]
 
@@ -325,7 +342,7 @@ class CouponService:
         for leg in coupon.legs:
             if leg.match.match_id == match_id:
                 sel = replace(leg.selection, odds=odds, odds_source="manual", implied=1 / odds)
-                leg = CouponLeg(leg.match, sel, leg.rationale)
+                leg = CouponLeg(leg.match, sel, leg.rationale, leg.summary)
             legs.append(leg)
         return replace(coupon, legs=legs)
 

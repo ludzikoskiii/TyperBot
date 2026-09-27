@@ -13,10 +13,11 @@ from typerbot.config.settings import CouponSettings, ModelSettings, TaxSettings
 from typerbot.data.db import Database
 from typerbot.model.backtest import BacktestConfig, run_backtest
 
+# Siatka wokół wartości wybranych kalibracją (80 meczów / 365 dni / 5) – 27 kombinacji.
 DEFAULT_GRID = {
-    "last_matches": [10, 15, 20, 30],
-    "half_life_days": [90.0, 180.0, 365.0],
-    "regularization": [3.0, 10.0, 30.0],
+    "last_matches": [40, 80, 120],
+    "half_life_days": [240.0, 365.0, 540.0],
+    "regularization": [2.5, 5.0, 10.0],
 }
 
 

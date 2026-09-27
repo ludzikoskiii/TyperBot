@@ -68,6 +68,24 @@ QFrame[role="card"] {{ background: {SURFACE}; border: 1px solid {BORDER}; border
 QFrame[role="banner"] {{ background: #2b2616; border: 1px solid #5a4a1c; border-radius: 6px; }}
 QFrame[role="alert"] {{ background: #2e1a1b; border: 1px solid #6b2a2c; border-radius: 6px; }}
 QProgressBar {{ background: {SURFACE_2}; border: none; border-radius: 4px; }}
+QFrame[role="leg"] {{ background: {SURFACE_2}; border: 1px solid {BORDER}; border-radius: 6px; }}
+QFrame[role="leg"] QLabel {{ background: transparent; }}
+QLabel[role="odds"] {{ font-size: 14pt; font-weight: 700; }}
+QLabel[role="big"] {{ font-size: 18pt; font-weight: 700; }}
+QLabel[role="section"] {{ color: {MUTED}; font-size: 9pt; font-weight: 600; }}
+QPushButton[role="segment"] {{ background: {SURFACE_2}; border: 1px solid {BORDER}; border-radius: 5px; padding: 7px 8px; }}
+QPushButton[role="segment"]:checked {{ background: #24345c; border-color: {ACCENT}; color: white; }}
+QPushButton[role="big"] {{ background: {ACCENT}; border-color: {ACCENT}; color: white; font-weight: 700;
+    font-size: 13pt; padding: 12px; border-radius: 8px; }}
+QPushButton[role="big"]:hover {{ background: #6f9bff; }}
+QPushButton[role="big"]:disabled {{ background: {SURFACE_2}; border-color: {BORDER}; color: {MUTED}; }}
+QToolButton {{ background: transparent; border: none; color: {MUTED}; padding: 2px 4px; }}
+QToolButton:hover {{ color: {TEXT}; }}
+QToolButton[role="expander"] {{ color: {TEXT}; font-weight: 600; padding: 6px 0; }}
+QDoubleSpinBox[role="target"] {{ font-size: 18pt; font-weight: 700; padding: 6px 8px; }}
+QMenu {{ background: {SURFACE_2}; border: 1px solid {BORDER}; }}
+QMenu::item {{ padding: 6px 18px; }}
+QMenu::item:selected {{ background: #2d3a5a; }}
 """
 
 

@@ -1,6 +1,7 @@
 """Testy interfejsu (bez ekranu – platforma offscreen, zadania w tle wykonywane od razu)."""
 
 import os
+from dataclasses import replace
 
 import pytest
 
@@ -8,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 
 from tests.conftest import NOW  # noqa: E402
+from typerbot.config.settings import Settings  # noqa: E402
 from typerbot.services.register import LOST, PENDING, WON  # noqa: E402
 from typerbot.ui import workers  # noqa: E402
 from typerbot.ui.context import demo_context  # noqa: E402
@@ -51,43 +53,77 @@ def test_status_bar_reports_sources(window):
     assert "Zaktualizowano" in window.message_label.text()
 
 
-def test_generator_records_history_swap_and_manual_odds(window, monkeypatch):
-    gen = window.generator
-    gen.days.setValue(7)
-    gen.target.setValue(4.0)
-    gen.tolerance.setValue(15)
-    gen.min_prob.setValue(50)
-    gen.generate()
-    cards = gen.cards()
+def generate(window, days=7, target=4.0, tolerance=15, min_prob=40):
+    tab = window.coupons
+    tab.days.setValue(days)
+    tab.set_range("days")
+    tab.target.setValue(target)
+    tab.tolerance.setValue(tolerance)
+    tab.min_prob.setValue(min_prob)
+    tab.generate()
+    return tab
+
+
+def test_three_tabs_and_simple_screen(window):
+    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert titles == ["Kupony", "Historia", "Ustawienia"]
+    tab = window.coupons
+    assert not tab.advanced.isVisible() and not tab.expander.isChecked()      # zaawansowane zwinięte
+    assert [b.text() for b in tab.range_buttons.values()][:2] == ["Dziś", "Jutro"]
+    tab.range_buttons["custom"].click()
+    assert tab.range_mode() == "custom" and tab.custom_row.isVisibleTo(tab)
+    tab.range_buttons["tomorrow"].click()
+    assert tab.current_cfg().date_range == "tomorrow" and not tab.custom_row.isVisibleTo(tab)
+    tab.expander.setChecked(True)
+    assert tab.advanced.isVisibleTo(tab)
+    # „Wszystkie mecze” – dawna zakładka „Mecze” jest w zakładce „Kupony”
+    tab.view_matches.click()
+    assert tab.stack.currentWidget() is window.matches
+
+
+def test_slip_cards_copy_swap_and_history(window, monkeypatch):
+    tab = generate(window)
+    cards = tab.cards()
     assert len(cards) == 3
+    probs = [c.coupon.probability for c in cards]
+    assert probs == sorted(probs, reverse=True)                  # od najwyższej szansy trafienia
     card = cards[0]
-    assert card.table.rowCount() == len(card.coupon.legs)
-    assert card.coupon.in_range
-    assert "Forma:" in card.rationale.text()
-    assert not hasattr(gen, "stake") and "Wygrana" not in card.tiles
-    # kupony same trafiają do historii
+    assert card.coupon.in_range and card.coupon.history_id
+    assert all(leg.summary.endswith(".") for leg in card.coupon.legs)   # jedno zdanie uzasadnienia
     history = window.history.list
-    assert history.table.rowCount() == 3 and card.coupon.history_id
-    assert f"nr {card.coupon.history_id}" in card.history_label.text()
+    assert history.table.rowCount() == 3
+
+    # kopiowanie – tekst kuponu w schowku, kupon oznaczony w historii jako skopiowany
+    card.copy()
+    text = QtWidgets.QApplication.clipboard().text()
+    assert text.startswith("TyperBot – kupon A") and "Kurs łączny" in text and "Szansa trafienia" in text
+    assert window.ctx.register.get(card.coupon.history_id).copied and "Skopiowano" in card.copied.text()
+    window.history.copied.setChecked(True)
+    assert window.history.list.table.rowCount() == 1
+    window.history.copied.setChecked(False)
 
     # zmiana kursu (okno dialogowe zastąpione odpowiedzią) – aktualizuje wpis w historii
     monkeypatch.setattr(QtWidgets.QInputDialog, "getDouble", staticmethod(lambda *a, **k: (2.5, True)))
-    card.table.selectRow(0)
-    card.change_odds()
+    first = card.coupon.legs[0].match.match_id
+    card.change_odds(first)
     assert card.coupon.legs[0].selection.odds == 2.5
-    assert card.tiles["Kurs łączny"].value.text().replace(",", ".") == f"{card.coupon.odds:.2f}"
     stored = window.ctx.register.get(card.coupon.history_id)
     assert stored.odds == pytest.approx(card.coupon.odds, abs=1e-3)
 
     # wymiana zdarzenia
-    leg = card.selected_leg()
-    options = card.service.swap_options(card.coupon, leg.match.match_id, card.cfg)
-    card.coupon = card.service.swap(card.coupon, leg.match.match_id, options[0])
+    options = card.service.swap_options(card.coupon, first, card.cfg)
+    card.coupon = card.service.swap(card.coupon, first, options[0])
     card._updated()
     assert options[0].leg.match.match_id in {x.match.match_id for x in card.coupon.legs}
     stored = window.ctx.register.get(card.coupon.history_id)
     assert {x.match_id for x in stored.legs} == card.coupon.match_ids and stored.status == PENDING
     assert "w trakcie" in window.history.list.summary.text()
+
+
+def test_no_coupon_shows_reason(window):
+    tab = generate(window, target=5000.0)
+    assert tab.cards() == [] and "Żadna kombinacja" in tab.placeholder.text()
+    assert tab.diag_btn.isEnabled() and tab.diagnosis and not tab.diagnosis.ok
 
 
 def test_history_settles_and_shows_units(window):
@@ -113,12 +149,21 @@ def test_history_settles_and_shows_units(window):
 
 
 def test_backtest_view_runs(window):
-    bt = window.stats.backtest
+    bt = window.settings.backtest
     assert bt.seasons.text()                                  # sezony podpowiedziane po synchronizacji
     bt.run()
     assert bt.result is not None and bt.metrics.rowCount() >= 3
     assert "Kupony" in bt.finance.text()
     assert bt.chart_row.count() >= 2
+
+
+def test_settings_screens_keep_defaults(window):
+    """Otwarcie i zapis ustawień bez zmian nie może obciąć wartości domyślnych (np. zakresem pola)."""
+    defaults = Settings()
+    s = window.settings.collect()
+    assert (s.model, s.odds, s.tax, s.sync) == (defaults.model, defaults.odds, defaults.tax, defaults.sync)
+    cfg = window.coupons.current_cfg()
+    assert replace(cfg, date_from="", date_to="") == defaults.coupon
 
 
 def test_settings_roundtrip(window):
@@ -129,7 +174,7 @@ def test_settings_roundtrip(window):
     s = window.ctx.settings()
     assert s.model.model_weight == pytest.approx(0.45)
     assert "BTTS" not in s.markets_enabled and "BTTS" not in s.coupon.markets
-    assert not window.generator.markets["BTTS"].isEnabled()   # generator reaguje na zmianę ustawień
+    assert not window.coupons.markets["BTTS"].isEnabled()     # generator reaguje na zmianę ustawień
     tab.key_edits["oddspapi"].setText("nowy-klucz-9999")
     tab.save_key("oddspapi")
     assert window.ctx.secrets.get("oddspapi") == "nowy-klucz-9999"
@@ -138,10 +183,6 @@ def test_settings_roundtrip(window):
 
 def test_no_money_anywhere_and_export(window, tmp_path):
     assert not hasattr(window, "budget") and not hasattr(window, "budget_banner")
-    titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
-    assert "Historia" in titles and "Moje kupony" not in titles
-    gen = window.generator
-    gen.days.setValue(7)
-    gen.generate()
+    generate(window)
     rows = window.history.list.export(str(tmp_path / "k.csv"))
     assert rows > 0 and "zł" not in (tmp_path / "k.csv").read_text(encoding="utf-8-sig")

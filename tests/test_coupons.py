@@ -9,14 +9,14 @@ from tests.conftest import NOW
 from tests.test_betting import random_candidates
 from tests.test_sync import make_service
 from typerbot.betting.evaluation import evaluate_match, fair_probabilities
-from typerbot.betting.optimizer import alternatives, brute_force, optimize
+from typerbot.betting.optimizer import _score, alternatives, brute_force, optimize
 from typerbot.config.settings import CouponSettings, Settings
 from typerbot.demo.world import DemoWorld
 from typerbot.fmt import plural
 from typerbot.services.coupons import CouponService
 
 H, D, A = ("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0)
-O, U = ("OU", "O", 2.5), ("OU", "U", 2.5)
+O, U = ("OU", "O", 2.5), ("OU", "U", 2.5)  # noqa: E741
 MODEL = {H: 0.50, D: 0.28, A: 0.22, ("DC", "1X", 0.0): 0.78, ("DC", "12", 0.0): 0.72, ("DC", "X2", 0.0): 0.50,
          O: 0.55, U: 0.45, ("BTTS", "Y", 0.0): 0.52, ("BTTS", "N", 0.0): 0.48}
 
@@ -37,6 +37,7 @@ def rows(**books):
 def test_evaluation_blend_reference_odds_implied_and_value():
     s = Settings()
     s.model.model_weight = 0.3
+    s.odds.margin_method = "proportional"
     odds = rows(superbet={H: 2.10, D: 3.30, A: 3.60}, unibet_eu={H: 2.00, D: 3.40, A: 3.80},
                 pinnacle={H: 2.05, D: 3.50, A: 3.90})
     ev = {e.key: e for e in evaluate_match(1, MODEL, odds, s)}
@@ -96,7 +97,7 @@ def test_overlap_limit_matches_brute_force(seed):
     assert (fast is None) == (exact is None)
     if fast:
         assert len({c.match_id for c in fast} & limits[0][0]) <= 1
-        score = lambda cs: sum(math.log(c.probability) for c in cs)  # noqa: E731
+        score = lambda cs: sum(_score(c) for c in cs)  # noqa: E731
         assert score(fast) == pytest.approx(score(exact), abs=0.02)
 
 

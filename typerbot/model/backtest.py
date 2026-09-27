@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from typerbot.betting.coupon import Candidate, coupon_odds
-from typerbot.betting.optimizer import optimize
+from typerbot.betting.optimizer import alternatives
 from typerbot.betting.evaluation import fair_probabilities
 from typerbot.betting.odds import payout, remove_margin
 from typerbot.betting.settlement import settle
@@ -74,6 +74,7 @@ class EvalRow:
     low_data: bool
     market_pre: dict[Key, float] = field(default_factory=dict)   # rynek w chwili zakładu (kursy przedmeczowe)
     used: dict[Key, float] = field(default_factory=dict)         # prognoza: mieszanka model + rynek
+    teams: tuple[int, ...] = ()                                  # drużyny (zależne typy na kuponie)
 
     def __post_init__(self) -> None:
         if not self.used:
@@ -159,6 +160,17 @@ class CouponRecord:
     market_probability: float | None    # szansa trafienia wg rynku (kursy bez marży)
     hit: bool
     returned: float
+    rank: int = 0                       # 0 – kupon z najwyższą szansą, 1–2 – alternatywy
+
+
+def week_candidates(rows: list[EvalRow], config: BacktestConfig) -> list[Candidate]:
+    """Typy z kursami z jednego tygodnia – kandydaci na kupony (tak jak w generatorze)."""
+    return [
+        Candidate(r.match_id, key, r.used[key], odds, r.league, key in r.estimated, r.probs.get(key),
+                  r.market_pre.get(key, r.market.get(key)), r.teams)
+        for r in rows if config.include_low_data or not r.low_data
+        for key, odds in r.bet_odds.items() if key in r.used
+    ]
 
 
 @dataclass
@@ -312,6 +324,7 @@ def _evaluate(table: MatchTable, i: int, league: str, model: FittedModel,
         match_id=int(table.match_id[i]), league=league, season=int(table.season[i]), t=float(table.t[i]),
         hg=int(table.hg[i]), ag=int(table.ag[i]), probs=pred.probs, market=market, bet_odds=bet,
         estimated=estimated, low_data=pred.low_data, market_pre=market_pre, used=used,
+        teams=(int(table.home_id[i]), int(table.away_id[i])),
     )
 
 
@@ -434,25 +447,18 @@ def _summarize(rows: list[EvalRow], config: BacktestConfig, model: ModelSettings
     for r in rows:
         weeks[_week_start(r.t)].append(r)
     for week, wrows in sorted(weeks.items()):
-        cands = [
-            Candidate(r.match_id, key, r.used[key], odds, r.league, key in r.estimated)
-            for r in wrows if config.include_low_data or not r.low_data
-            for key, odds in r.bet_odds.items() if key in r.used
-        ]
-        chosen = optimize(cands, coupon_cfg)
-        if not chosen:
-            continue
         by_id = {r.match_id: r for r in wrows}
-        results = [by_id[c.match_id].result(c.key) for c in chosen]
-        total = coupon_odds([c for c, res in zip(chosen, results) if res is not None])  # zwrot = kurs 1,00
-        hit = all(res in (1, None) for res in results)
-        returned = payout(config.stake, total, tax) if hit else 0.0
-        coupons.add(config.stake, total, hit, returned)
-        market_p = [by_id[c.match_id].market.get(c.key) for c in chosen]
-        records.append(CouponRecord(
-            _date(week), chosen, total, float(np.prod([c.probability for c in chosen])),
-            float(np.prod(market_p)) if all(x is not None for x in market_p) else None, hit, returned))
-        equity_c.append((_date(week), round(coupons.profit, 2)))
+        for rank, chosen in enumerate(alternatives(week_candidates(wrows, config), coupon_cfg, coupon_cfg.alternatives)):
+            results = [by_id[c.match_id].result(c.key) for c in chosen]
+            total = coupon_odds([c for c, res in zip(chosen, results) if res is not None])  # zwrot = kurs 1,00
+            hit = all(res in (1, None) for res in results)
+            returned = payout(config.stake, total, tax) if hit else 0.0
+            coupons.add(config.stake, total, hit, returned)
+            market_p = [by_id[c.match_id].market.get(c.key) for c in chosen]
+            records.append(CouponRecord(
+                _date(week), chosen, total, float(np.prod([c.probability for c in chosen])),
+                float(np.prod(market_p)) if all(x is not None for x in market_p) else None, hit, returned, rank))
+            equity_c.append((_date(week), round(coupons.profit, 2)))
 
     notes = []
     blend = _blend_analysis(rows)

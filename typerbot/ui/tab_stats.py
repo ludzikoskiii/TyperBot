@@ -40,8 +40,8 @@ class BacktestView(QWidget):
         self.seasons = QLineEdit()
         self.seasons.setPlaceholderText("np. 2023, 2024, 2025")
         self.mode = QComboBox()
-        self.mode.addItem("Kupony: najwyższe prawdopodobieństwo", "probability")
-        self.mode.addItem("Kupony: najwyższa wartość (EV)", "value")
+        self.mode.addItem("Kupony: najwyższa szansa trafienia", "probability")
+        self.mode.addItem("Kupony: tylko typy z przewagą (value)", "value")
         self.target = QDoubleSpinBox()
         self.target.setRange(1.2, 1000)
         self.target.setDecimals(2)
@@ -95,7 +95,7 @@ class BacktestView(QWidget):
         rlay.addWidget(self.metrics)
         rlay.addLayout(hbox(label("2) Kalibracja i 4) mieszanka model + rynek", "muted"), None, self.cal_market))
         rlay.addWidget(self.chart_row, 1)
-        rlay.addWidget(label("3) Wynik finansowy (po podatku)", "muted"))
+        rlay.addWidget(label("3) Wynik w jednostkach – 1 zakład / kupon = 1 j. (po podatku)", "muted"))
         rlay.addWidget(self.finance)
         rlay.addWidget(label("Strojenie parametrów", "muted"))
         rlay.addWidget(self.tune_table)
@@ -286,12 +286,3 @@ class BacktestView(QWidget):
             settings.model.model_weight = best.best_model_weight
         self.ctx.save_settings(settings)
         self.status.setText("Zapisano najlepsze ustawienia modelu.")
-
-
-class StatsTab(QWidget):
-    def __init__(self, ctx: AppContext):
-        super().__init__()
-        self.backtest = BacktestView(ctx)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.backtest)

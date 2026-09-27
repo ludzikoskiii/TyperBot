@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from typerbot.betting.optimizer import conflict_groups
 from typerbot.config.secrets import KEYED_SOURCES
 from typerbot.config.settings import CouponSettings
 from typerbot.data.errors import STATE_LABELS
@@ -184,7 +185,7 @@ def diagnose(service: CouponService, cfg: CouponSettings, coupons: list[Coupon],
     stages = [Stage("Mecze w bazie w zakresie dat (wszystkie ligi)", len(in_window)),
               Stage("W wybranych ligach", len(in_leagues)),
               Stage("Z prognozą modelu", len(evaluated))]
-    for label, cands in service.candidate_stages(cfg):
+    for _key, label, cands in service.candidate_stages(cfg):
         stages.append(Stage(label, len({c.match_id for c in cands}), len(cands)))
     final = service.candidates(cfg)
     stages.append(Stage("Na kuponach", len({leg.match.match_id for c in coupons for leg in c.legs}),
@@ -271,11 +272,11 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
         hints.append("Kliknij „Odśwież dane” – historia pobiera się z plików football-data.co.uk.")
         return
 
-    stages = service.candidate_stages(cfg)
-    counts = [len({c.match_id for c in cands}) for _, cands in stages]
+    stages = {key: cands for key, _label, cands in service.candidate_stages(cfg)}
+    count = {key: len({c.match_id for c in cands}) for key, cands in stages.items()}
 
     # 4. Brak kursów.
-    if counts[0] == 0:
+    if count["odds"] == 0:
         with_any = [mid for mid, (_, evals) in evaluated.items() if any(e.odds for e in evals)]
         if with_any:
             reasons.append(f"Kursy są tylko dla rynków, których nie zaznaczono ({plural(len(with_any), 'mecz', 'mecze', 'meczów')}).")
@@ -290,35 +291,48 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
                      f"przed kolejką, a brakujące kursy uzupełniamy dla meczów z najbliższych {horizon} dni – "
                      "wybierz bliższy zakres dat.")
         return
+    if "estimated" in count and count["estimated"] == 0:
+        reasons.append("Wszystkie dostępne kursy są szacunkowe, a kursy szacunkowe są wyłączone.")
+        hints.append("Włącz „Dopuść kursy szacunkowe” w sekcji „Zaawansowane” albo wpisz klucz OddsPapi/The Odds API.")
+        return
 
     # 5. Minimalne prawdopodobieństwo.
-    if counts[1] == 0:
-        best = max(c.probability for c in stages[0][1])
+    if count["prob"] == 0:
+        best = max(c.probability for c in stages["odds"])
         reasons.append(f"Żaden typ nie ma szansy co najmniej {pct(cfg.min_probability)} "
                        f"(najwyższa: {pct(best)}).")
         hints.append(f"Obniż minimalne prawdopodobieństwo typu do ok. {pct(max(0.05, best - 0.05))}.")
         return
 
-    # 6. Mało danych.
-    idx = 2
-    if not cfg.include_low_data:
-        if counts[2] == 0:
-            reasons.append("Wszystkie mecze z pasującymi typami dotyczą drużyn z małą liczbą danych "
-                           "(np. beniaminków).")
-            hints.append("Zaznacz „Dopuść drużyny z małą liczbą danych” w sekcji „Zaawansowane”.")
-            return
-        idx = 3
+    # 6. Zgodność modelu z rynkiem / typy z przewagą.
+    if count.get("agree") == 0:
+        diffs = [abs(c.divergence) for c in stages["prob"] if c.divergence is not None]
+        smallest = f"{min(diffs) * 100:.0f} pkt proc." if diffs else "–"
+        reasons.append(f"W każdym pasującym typie model mocno odbiega od rynku (najmniejsza różnica: {smallest}) – "
+                       "takich typów nie stawiamy bez wyraźnego powodu.")
+        hints.append("Zwiększ dopuszczalną różnicę model–rynek w sekcji „Zaawansowane” albo poszerz zakres dat.")
+        return
+    if count.get("value") == 0:
+        reasons.append("Żaden pasujący typ nie ma przewagi nad kursem (EV > 0) – w trybie „Najwyższa wartość” "
+                       "na kupon trafiają tylko takie typy.")
+        hints.append("Wybierz tryb „Najwyższa szansa trafienia” albo poszerz zakres dat.")
+        return
 
-    # 7. Kurs pojedynczego typu powyżej górnej granicy.
-    if counts[idx] == 0:
+    # 7. Mało danych.
+    if count.get("low") == 0:
+        reasons.append("Wszystkie mecze z pasującymi typami dotyczą drużyn z małą liczbą danych "
+                       "(np. beniaminków).")
+        hints.append("Zaznacz „Dopuść drużyny z małą liczbą danych” w sekcji „Zaawansowane”.")
+        return
+
+    # 8. Kurs pojedynczego typu powyżej górnej granicy.
+    if count["cap"] == 0:
         reasons.append(f"Każdy pasujący typ ma kurs wyższy niż górna granica kuponu ({num(hi)}).")
         hints.append("Podnieś kurs docelowy.")
         return
 
-    # 8. Liczba meczów i zakres kursu łącznego.
-    groups: dict[int, list[float]] = defaultdict(list)
-    for c in final:
-        groups[c.match_id].append(c.odds)
+    # 9. Liczba meczów (drużyna najwyżej raz) i zakres kursu łącznego.
+    groups = {i: [c.odds for c in g] for i, g in enumerate(conflict_groups(final))}
     n = len(groups)
     if n < cfg.min_events:
         reasons.append(f"Tylko {plural(n, 'mecz ma', 'mecze mają', 'meczów ma')} typ spełniający warunki, "

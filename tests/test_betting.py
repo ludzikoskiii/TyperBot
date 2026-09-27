@@ -1,16 +1,16 @@
 """Testy liczenia kursów, marży, podatku, rozliczania typów i optymalizatora kuponu."""
 
 import itertools
-import math
 import random
+from dataclasses import replace
 
 import pytest
 
-from typerbot.betting.coupon import Candidate, coupon_odds, coupon_probability, greedy_coupon
+from typerbot.betting.coupon import Candidate, coupon_odds, coupon_probability
 from typerbot.betting.odds import (
     effective_stake, expected_value, odds_after_tax, overround, payout, remove_margin,
 )
-from typerbot.betting.optimizer import brute_force, optimize
+from typerbot.betting.optimizer import _score, alternatives, brute_force, conflict_groups, eligible, optimize
 from typerbot.betting.settlement import settle
 from typerbot.config.settings import CouponSettings, TaxSettings
 
@@ -96,10 +96,8 @@ def test_optimizer_matches_brute_force(seed, mode):
         assert fast is None
         return
     assert fast is not None
-    score = (lambda c: math.log(c.probability)) if mode == "probability" else (
-        lambda c: math.log(c.probability * c.odds))
     # DP na zaokrąglonych kursach może minimalnie odbiegać od pełnego przeszukania
-    assert sum(map(score, fast)) == pytest.approx(sum(map(score, exact)), abs=0.02)
+    assert sum(map(_score, fast)) == pytest.approx(sum(map(_score, exact)), abs=0.02)
 
 
 @pytest.mark.parametrize("seed", range(8))
@@ -116,12 +114,60 @@ def test_optimizer_respects_constraints(seed):
     assert all(c.probability >= 0.5 for c in chosen)
 
 
-def test_optimizer_prefers_higher_probability():
+def test_equal_odds_prefers_higher_probability():
     cfg = CouponSettings(target_odds=3.0, tolerance=0.05, min_events=2, max_events=2, min_probability=0.3)
     cands = [cand(1, "H", 0.60, 1.75), cand(2, "H", 0.58, 1.72), cand(3, "H", 0.40, 1.73), cand(4, "A", 0.35, 1.74)]
     chosen = optimize(cands, cfg)
     assert {c.match_id for c in chosen} == {1, 2}
     assert coupon_probability(chosen) == pytest.approx(0.60 * 0.58)
+
+
+def test_no_drift_to_bottom_of_tolerance():
+    """Stary algorytm (max szansy) brał kurs 3,61 z dolnej granicy. Teraz porównujemy przy tym samym kursie:
+    kupon 4,20 ma większą szansę w przeliczeniu na kurs (0,244·4,2 > 0,25·3,61)."""
+    cfg = CouponSettings(target_odds=4.0, tolerance=0.1, min_events=2, max_events=2, min_probability=0.3)
+    low = [cand(1, "H", 0.50, 1.90), cand(2, "H", 0.50, 1.90)]          # kurs 3,61, szansa 25,0%
+    fair = [cand(3, "H", 0.52, 2.00), cand(4, "H", 0.47, 2.10)]         # kurs 4,20, szansa 24,4%
+    chosen = optimize(low + fair, cfg)
+    assert {c.match_id for c in chosen} == {3, 4}
+
+
+def test_fewer_events_when_equal():
+    cfg = CouponSettings(target_odds=4.0, tolerance=0.1, min_events=1, max_events=3, min_probability=0.2)
+    one = [cand(1, "H", 0.25, 4.0)]                                    # p·kurs = 1,00
+    three = [cand(2, "H", 0.63, 1.587), cand(3, "H", 0.63, 1.587), cand(4, "H", 0.63, 1.587)]  # też 1,00
+    chosen = optimize(one + three, cfg)
+    assert [c.match_id for c in chosen] == [1]
+
+
+def test_agreement_filter_and_value_mode():
+    agree = Candidate(1, ("1X2", "H", 0.0), 0.56, 1.8, p_model=0.60, p_market=0.54)
+    wild = Candidate(2, ("1X2", "H", 0.0), 0.60, 1.9, p_model=0.75, p_market=0.53)     # model +22 pkt vs rynek
+    other = Candidate(3, ("1X2", "H", 0.0), 0.55, 1.85, p_model=0.56, p_market=0.55)
+    cfg = CouponSettings(target_odds=3.4, tolerance=0.1, min_events=2, max_events=2, min_probability=0.3)
+    assert 2 not in {c.match_id for c in eligible([agree, wild, other], cfg)}
+    chosen = optimize([agree, wild, other], cfg)
+    assert {c.match_id for c in chosen} == {1, 3}
+    value = replace(cfg, mode="value")
+    assert {c.match_id for c in eligible([agree, wild, other], value)} == {1, 2, 3}   # wszystkie mają p·kurs > 1
+    assert eligible([Candidate(4, ("1X2", "H", 0.0), 0.5, 1.9)], value) == []          # EV < 0
+
+
+def test_same_team_not_twice():
+    cfg = CouponSettings(target_odds=3.5, tolerance=0.15, min_events=2, max_events=2, min_probability=0.3)
+    a = Candidate(1, ("1X2", "H", 0.0), 0.62, 1.85, teams=(10, 11))   # drużyna 11 gra w obu meczach
+    b = Candidate(2, ("1X2", "A", 0.0), 0.60, 1.90, teams=(12, 11))
+    c = Candidate(3, ("1X2", "H", 0.0), 0.55, 1.88, teams=(13, 14))
+    chosen = optimize([a, b, c], cfg)
+    assert chosen and not ({1, 2} <= {x.match_id for x in chosen})
+    assert len(conflict_groups([a, b, c])) == 2
+
+
+def test_alternatives_sorted_by_probability():
+    cfg = CouponSettings(target_odds=4.0, tolerance=0.15, min_events=2, max_events=4, min_probability=0.35)
+    coupons = alternatives(random_candidates(5, n_matches=14), cfg, 3)
+    probs = [coupon_probability(c) for c in coupons]
+    assert len(coupons) >= 2 and probs == sorted(probs, reverse=True)
 
 
 def test_optimizer_excludes_matches_and_markets():
@@ -137,18 +183,10 @@ def test_optimizer_returns_none_when_impossible():
     assert optimize([cand(1, "H", 0.6, 1.5), cand(2, "H", 0.6, 1.6)], cfg) is None
 
 
-def test_greedy_coupon_stays_in_range():
-    cfg = CouponSettings(target_odds=3.0, tolerance=0.1, min_events=2, max_events=4, min_probability=0.5)
-    cands = [cand(0, "H", 0.70, 1.70), cand(1, "H", 0.68, 1.75), cand(2, "H", 0.60, 1.50), cand(2, "A", 0.2, 5.0)]
-    chosen = greedy_coupon(cands, cfg)
-    assert chosen and 2.7 <= coupon_odds(chosen) <= 3.3
-    assert [c.match_id for c in chosen] == [0, 1]
-
-
 def test_brute_force_small_example():
     cfg = CouponSettings(target_odds=2.0, tolerance=0.1, min_events=1, max_events=2, min_probability=0.1)
     cands = [cand(1, "H", 0.5, 2.0), cand(1, "A", 0.3, 1.4), cand(2, "H", 0.7, 1.4)]
     best = brute_force(cands, cfg)
-    # kandydaci: {H1}=0.5 (kurs 2.0), {A1,H2}=0.21 (1.96) -> najlepszy pojedynczy H1
+    # kandydaci: {H1}: p·kurs = 1,0; {A1,H2}: 0,42·0,98 – najlepszy pojedynczy H1
     assert [(c.match_id, c.key[1]) for c in best] == [(1, "H")]
     assert list(itertools.chain(best))

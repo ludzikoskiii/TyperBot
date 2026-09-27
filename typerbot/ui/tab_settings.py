@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
-    QInputDialog, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QInputDialog, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from typerbot.config.leagues import League
@@ -140,7 +140,7 @@ class SettingsTab(QWidget):
 
         # model
         model_box = QGroupBox("Model prognoz")
-        self.last_matches = _spin(5, 60, " meczów")
+        self.last_matches = _spin(5, 200, " meczów")
         self.half_life = _dspin(10, 2000, 0, 10, " dni")
         self.min_matches = _spin(1, 30, " meczów")
         self.regularization = _dspin(0, 200, 1, 1)
@@ -153,8 +153,8 @@ class SettingsTab(QWidget):
         mf.addRow("Regularyzacja", self.regularization)
         mf.addRow("Udział modelu w prognozie", self.model_weight)
         mf.addRow("", self.dixon_coles)
-        mf.addRow(label("Resztę prognozy stanowi rynek (kursy bez marży). Najlepsze wartości dobierzesz w "
-                        "„Statystyki → Backtest → Strojenie”.", "muted", wrap=True))
+        mf.addRow(label("Resztę prognozy stanowi rynek (kursy bez marży). Najlepsze wartości dobierzesz poniżej: "
+                        "„Strojenie parametrów” → „Zapisz najlepsze ustawienia”.", "muted", wrap=True))
 
         # kursy i podatek
         odds_box = QGroupBox("Kursy")
@@ -231,22 +231,34 @@ class SettingsTab(QWidget):
         self.defaults_btn = QPushButton("Przywróć domyślne")
         self.status = label("", "muted")
 
-        content = QWidget()
-        grid = QGridLayout(content)
-        grid.addWidget(keys_box, 0, 0, 1, 2)
-        grid.addWidget(leagues_box, 1, 0)
-        grid.addWidget(markets_box, 1, 1)
-        grid.addWidget(model_box, 3, 0)
-        grid.addWidget(odds_box, 3, 1)
-        grid.addWidget(tax_box, 4, 0)
-        grid.addWidget(sync_box, 4, 1)
-        grid.addWidget(quota_box, 5, 0, 1, 2)
-        grid.addWidget(teams_box, 6, 0, 1, 2)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(content)
+        def page(*rows) -> QScrollArea:
+            content = QWidget()
+            grid = QGridLayout(content)
+            for r, widgets in enumerate(rows):
+                for c, w in enumerate(widgets):
+                    grid.addWidget(w, r, c, 1, 2 if len(widgets) == 1 else 1)
+            grid.setRowStretch(len(rows), 1)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(content)
+            return scroll
+
+        # Model i backtest – strojenie zmienia ustawienia modelu, więc są w jednym miejscu.
+        from typerbot.ui.tab_stats import BacktestView
+
+        self.backtest = BacktestView(ctx)
+        model_page = QWidget()
+        mpl = QVBoxLayout(model_page)
+        mpl.setContentsMargins(0, 0, 0, 0)
+        model_box.setMaximumWidth(760)
+        mpl.addWidget(model_box)
+        mpl.addWidget(self.backtest, 1)
+        self.pages = QTabWidget()
+        self.pages.addTab(page((leagues_box, markets_box), (odds_box, tax_box)), "Ogólne")
+        self.pages.addTab(page((keys_box,), (sync_box,), (quota_box,), (teams_box,)), "Źródła danych")
+        self.pages.addTab(model_page, "Model i backtest")
         lay = QVBoxLayout(self)
-        lay.addWidget(scroll, 1)
+        lay.addWidget(self.pages, 1)
         lay.addLayout(hbox(self.status, None, self.defaults_btn, self.save_btn))
 
         self.save_btn.clicked.connect(self.save)

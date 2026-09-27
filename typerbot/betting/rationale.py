@@ -176,3 +176,44 @@ def match_summary(db: Database, match: dict, lam_home: float, lam_away: float) -
     else:
         lines.append("Brak wcześniejszych spotkań tych drużyn w bazie")
     return lines
+
+
+def one_liner(db: Database, sel: SelectionEval, match: dict, lam_home: float, lam_away: float) -> str:
+    """Jedno zdanie uzasadnienia na kupon: najważniejsza statystyka dla typu i zgodność modelu z rynkiem."""
+    home, away, before = match["home"], match["away"], match["kickoff"]
+    market, pick = sel.key[0], sel.key[1]
+    hf = team_form(db, match["home_id"], before, "home")
+    af = team_form(db, match["away_id"], before, "away")
+
+    def count(form: TeamForm, *codes: str) -> int:
+        return sum(r in codes for r in form.results)
+
+    if market == "1X2" and pick == "H":
+        stat = f"{home} wygrał {count(hf, 'Z')} z {hf.n} ostatnich meczów u siebie"
+    elif market == "1X2" and pick == "A":
+        stat = f"{away} wygrał {count(af, 'Z')} z {af.n} ostatnich meczów na wyjeździe"
+    elif market == "1X2":
+        stat = f"remisy: {home} {count(hf, 'R')} z {hf.n} u siebie, {away} {count(af, 'R')} z {af.n} na wyjeździe"
+    elif market == "DC" and pick == "1X":
+        stat = f"{home} bez porażki w {count(hf, 'Z', 'R')} z {hf.n} ostatnich meczów u siebie"
+    elif market == "DC" and pick == "X2":
+        stat = f"{away} bez porażki w {count(af, 'Z', 'R')} z {af.n} ostatnich meczów na wyjeździe"
+    elif market == "DC":
+        stat = f"remisów mało: {home} {count(hf, 'R')} z {hf.n} u siebie, {away} {count(af, 'R')} z {af.n} na wyjeździe"
+    elif market == "OU":
+        h10 = team_form(db, match["home_id"], before, None, 10)
+        a10 = team_form(db, match["away_id"], before, None, 10)
+        share = (h10.over25 + a10.over25) / 2 if pick == "O" else 1 - (h10.over25 + a10.over25) / 2
+        side = "ponad" if pick == "O" else "najwyżej"
+        stat = f"oczekiwane gole {_num(lam_home + lam_away)}; {side} 2,5 gola w {_pct(share)} ostatnich meczów obu drużyn"
+    else:
+        h10 = team_form(db, match["home_id"], before, None, 10)
+        a10 = team_form(db, match["away_id"], before, None, 10)
+        share = (h10.btts + a10.btts) / 2 if pick == "Y" else 1 - (h10.btts + a10.btts) / 2
+        verb = "obie strzelały" if pick == "Y" else "co najmniej jedna nie strzeliła"
+        stat = f"{verb} w {_pct(share)} ostatnich meczów obu drużyn"
+    if sel.p_market is not None:
+        stat += f"; model {_pct(sel.p_model)} i rynek {_pct(sel.p_market)}"
+    else:
+        stat += f"; model {_pct(sel.p_model)}"
+    return stat[0].upper() + stat[1:] + "."

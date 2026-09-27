@@ -80,7 +80,8 @@ class MatchesTab(QWidget):
 
         root = QVBoxLayout(self)
         root.addLayout(hbox(label("Zakres:"), self.range_box, label("Liga:"), self.league_box, self.market_box,
-                            self.value_only, None, self.info, self.refresh_btn))
+                            None, self.refresh_btn))
+        root.addLayout(hbox(self.value_only, None, self.info))   # osobny wiersz – ekran mieści się na laptopie
         root.addWidget(split, 1)
 
         self.refresh_btn.clicked.connect(self.reload)
