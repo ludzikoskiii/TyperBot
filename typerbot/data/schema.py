@@ -169,6 +169,46 @@ MIGRATIONS: list[str] = [
         summary    TEXT NOT NULL
     );
     """,
+    # --- v3: rejestr postawionych kuponów -----------------------------------------
+    """
+    CREATE TABLE coupons (
+        id                 INTEGER PRIMARY KEY,
+        created_at         TEXT NOT NULL,
+        placed_at          TEXT NOT NULL,
+        bookmaker          TEXT NOT NULL DEFAULT '',
+        stake              REAL NOT NULL,
+        odds               REAL NOT NULL,
+        bookmaker_pays_tax INTEGER NOT NULL DEFAULT 0,
+        status             TEXT NOT NULL DEFAULT 'pending',
+        payout             REAL,
+        settled_at         TEXT,
+        manual             INTEGER NOT NULL DEFAULT 0,
+        probability        REAL,
+        probability_model  REAL,
+        probability_market REAL,
+        ev                 REAL,
+        note               TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX idx_coupons_status ON coupons(status);
+    CREATE INDEX idx_coupons_placed ON coupons(placed_at);
+
+    CREATE TABLE coupon_legs (
+        id          INTEGER PRIMARY KEY,
+        coupon_id   INTEGER NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
+        match_id    INTEGER NOT NULL REFERENCES matches(id),
+        league_code TEXT NOT NULL,
+        market      TEXT NOT NULL,
+        selection   TEXT NOT NULL,
+        line        REAL NOT NULL DEFAULT 0,
+        odds        REAL NOT NULL,
+        probability REAL,
+        p_model     REAL,
+        p_market    REAL,
+        result      TEXT NOT NULL DEFAULT 'pending'
+    );
+    CREATE INDEX idx_coupon_legs_coupon ON coupon_legs(coupon_id);
+    CREATE INDEX idx_coupon_legs_match ON coupon_legs(match_id);
+    """,
 ]
 
 

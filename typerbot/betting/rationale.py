@@ -148,3 +148,31 @@ def build_rationale(db: Database, sel: SelectionEval, match: dict, lam_home: flo
     if notes:
         lines.append("Uwaga: " + "; ".join(notes))
     return lines
+
+
+def match_summary(db: Database, match: dict, lam_home: float, lam_away: float) -> list[str]:
+    """Ogólny opis meczu (do panelu szczegółów w zakładce „Mecze”)."""
+    home, away, before = match["home"], match["away"], match["kickoff"]
+    hf, af = team_form(db, match["home_id"], before, "home"), team_form(db, match["away_id"], before, "away")
+    h10, a10 = team_form(db, match["home_id"], before, None, 10), team_form(db, match["away_id"], before, None, 10)
+    h2h = head_to_head(db, match["home_id"], match["away_id"], before)
+    lines = [
+        f"Oczekiwane gole modelu: {_num(lam_home)} : {_num(lam_away)}",
+        f"{home} u siebie (5): {hf.form} · śr. bramek {_num(hf.goals_for)}:{_num(hf.goals_against)}",
+        f"{away} na wyjeździe (5): {af.form} · śr. bramek {_num(af.goals_for)}:{_num(af.goals_against)}",
+        f"Ostatnie 10 meczów – ponad 2,5 bramki: {home} {_pct(h10.over25)}, {away} {_pct(a10.over25)}; "
+        f"obie strzeliły: {home} {_pct(h10.btts)}, {away} {_pct(a10.btts)}",
+    ]
+    if h10.xg_for is not None or a10.xg_for is not None:
+        parts = []
+        for name, f in ((home, h10), (away, a10)):
+            if f.xg_for is not None:
+                parts.append(f"{name} {_num(f.xg_for)}:{_num(f.xg_against or 0)}")
+        lines.append("Średnie xG (ostatnie mecze z xG): " + ", ".join(parts))
+    if h2h.n:
+        lines.append(f"Bilans ostatnich spotkań ({h2h.n}): {h2h.home_wins} zw. {home}, "
+                     f"{plural(h2h.draws, 'remis', 'remisy', 'remisów')}, {h2h.away_wins} zw. {away} "
+                     f"({', '.join(h2h.games)})")
+    else:
+        lines.append("Brak wcześniejszych spotkań tych drużyn w bazie")
+    return lines

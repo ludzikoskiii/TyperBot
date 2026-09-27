@@ -1,4 +1,4 @@
-"""Narzędzie wiersza poleceń (do czasu interfejsu graficznego w etapie 4).
+"""Narzędzie wiersza poleceń (interfejs graficzny: python -m typerbot lub python -m typerbot gui).
 
   python -m typerbot demo                 synchronizacja na danych syntetycznych
   python -m typerbot demo --awaria the_odds_api   (symulacja awarii źródła)
@@ -402,9 +402,19 @@ def _add_backtest_args(p: argparse.ArgumentParser) -> None:
                    help="obniżka kursów względem średniej rynkowej, np. 0.03 (wyższa marża Superbet)")
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    from typerbot.ui.app import run
+
+    return run(demo=args.demo)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="typerbot", description="TyperBot – dane, model i backtest")
     sub = parser.add_subparsers(dest="cmd")
+
+    p = sub.add_parser("gui", help="interfejs graficzny (to samo co uruchomienie bez argumentów)")
+    p.add_argument("--demo", action="store_true", help="tryb demo – dane syntetyczne, bez kluczy")
+    p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("demo", help="synchronizacja na danych syntetycznych (bez kluczy i internetu)")
     p.add_argument("--awaria", action="append", choices=list(SOURCE_LABELS), help="symuluj awarię źródła")

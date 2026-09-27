@@ -15,10 +15,8 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 | 1 | Źródła danych, pobieranie, baza SQLite, cache, limity API | **gotowy** |
 | 2 | Model prognoz (Dixon-Coles), backtest, strojenie parametrów | **gotowy** |
 | 3 | Ocena typów (marża, podatek, EV) i generator kuponu | **gotowy** |
-| 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | następny |
-| 5 | Kontrola budżetu, dopracowanie, plik .exe | – |
-
-Do czasu interfejsu graficznego (etap 4) aplikację obsługuje się z wiersza poleceń.
+| 4 | Interfejs (5 zakładek), rejestr kuponów, statystyki | **gotowy** |
+| 5 | Kontrola budżetu, dopracowanie, plik .exe | następny |
 
 ## Uruchomienie na Windows
 
@@ -34,8 +32,14 @@ Do czasu interfejsu graficznego (etap 4) aplikację obsługuje się z wiersza po
 
    Jeśli PowerShell zablokuje aktywację skryptu, wykonaj raz:
    `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
-3. Sprawdź, że wszystko działa – **tryb demo** nie potrzebuje kluczy ani internetu
-   (dane syntetyczne, tymczasowa baza):
+3. Uruchom aplikację:
+
+   ```powershell
+   python -m typerbot              # interfejs graficzny
+   python -m typerbot gui --demo   # interfejs w trybie demo – bez kluczy i internetu (dane syntetyczne)
+   ```
+
+   Tryb demo w wierszu poleceń (raport tekstowy):
 
    ```powershell
    python -m typerbot demo
@@ -45,9 +49,23 @@ Do czasu interfejsu graficznego (etap 4) aplikację obsługuje się z wiersza po
 
 4. Uruchom testy: `python -m pytest`.
 
+## Interfejs
+
+| Zakładka | Co zawiera |
+|---|---|
+| **Mecze** | nadchodzące mecze z prognozą 1 / X / 2 / >2,5 / BTTS (paski), liczba typów value; po kliknięciu meczu – wszystkie typy (prognoza, model, rynek, kurs, implikowane, EV, EV po podatku; value na zielono) i opis: forma, średnie, xG, bilans spotkań |
+| **Generator kuponu** | kurs docelowy i tolerancja, zakres dat (dziś / jutro / X dni / własny), liczba zdarzeń, min. prawdopodobieństwo, tryb, ligi, rynki, stawka → 3 kupony z kursem przed/po podatku, szansą trafienia (prognoza, model, rynek), EV i wygraną; uzasadnienie każdego typu; **Wymień zdarzenie…**, **Zmień kurs…** (kurs z oferty), **Usuń zdarzenie**, **Zapisz jako postawiony…** |
+| **Moje kupony** | rejestr postawionych kuponów, automatyczne rozliczanie po meczach, szczegóły z wynikami, ręczne rozliczenie (np. wcześniejsza wypłata) |
+| **Statystyki** | bilans, ROI, trafność, krzywa bilansu, wynik w miesiącach, podział na rynki i ligi; podzakładka **Backtest modelu** ze skutecznością, kalibracją (wykres), wynikiem finansowym, mieszanką model + rynek i **strojeniem** parametrów |
+| **Ustawienia** | klucze API, ligi (włączanie, dodawanie), rynki, model, kursy, podatek, pobieranie danych, budżet, limity API, dopasowanie nazw drużyn |
+
+Pasek stanu pokazuje każde źródło danych (zielona kropka = OK, w podpowiedzi szczegóły i pozostały limit).
+Dane odświeżają się w tle przy starcie i co 3 godziny (przycisk **Odśwież dane** – od razu); przy okazji
+rozliczają się zakończone kupony. Wszystkie obliczenia i pobieranie działają w tle – okno się nie zawiesza.
+
 ## Klucze API
 
-Wszystkie źródła mają darmowe plany. Klucz wpisujesz poleceniem `klucz` – trafia do
+Wszystkie źródła mają darmowe plany. Klucz wpisujesz w **Ustawieniach** (albo poleceniem `klucz`) – trafia do
 **Menedżera poświadczeń Windows** (biblioteka `keyring`), nigdy do bazy ani plików projektu.
 Wpisywany klucz nie jest wyświetlany.
 
@@ -220,6 +238,9 @@ typerbot/
 ├── services/sync.py            synchronizacja z izolacją błędów źródeł
 ├── services/predict.py         prognozy nadchodzących meczów (zapis w bazie)
 ├── services/coupons.py         generator kuponów, wymiana zdarzeń, kurs ręczny
+├── services/register.py        rejestr postawionych kuponów i automatyczne rozliczanie
+├── services/stats.py           bilans, ROI, trafność – ogółem, miesiące, rynki, ligi
+├── ui/                         interfejs PySide6: okno, 5 zakładek, wykresy, motyw, zadania w tle
 ├── demo/                       syntetyczny świat meczów i transport udający API
 └── cli.py                      polecenia wiersza poleceń
 tests/                          testy jednostkowe i integracyjne (pytest)
