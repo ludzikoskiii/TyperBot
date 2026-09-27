@@ -15,7 +15,8 @@ from typerbot import APP_NAME
 log = logging.getLogger(__name__)
 
 SERVICE = APP_NAME
-KEYED_SOURCES = ("football_data_org", "api_football", "the_odds_api", "oddspapi")
+KEYED_SOURCES = ("football_data_org", "the_odds_api", "oddspapi")
+REMOVED_SOURCES = ("api_football",)   # źródła usunięte z aplikacji – ich klucze kasujemy z magazynu
 
 
 class SecretStoreError(RuntimeError):

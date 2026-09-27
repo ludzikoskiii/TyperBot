@@ -1,8 +1,9 @@
 """Transport HTTP trybu demo – odpowiada w formatach prawdziwych API.
 
-Odwzorowuje ograniczenia planów darmowych: API-Football – tylko sezony
-2022–2024, football-data.org – tylko bieżący sezon. Pozwala też zasymulować
-awarię źródła (brak połączenia), żeby pokazać, że aplikacja działa dalej.
+Odwzorowuje ograniczenia planów darmowych (football-data.org – tylko bieżący sezon,
+The Odds API – kredyty, bezpłatna lista meczów) i opóźnienia plików football-data.co.uk.
+Pozwala też zasymulować awarię źródła (brak połączenia), żeby pokazać, że aplikacja
+działa dalej.
 """
 
 from __future__ import annotations
@@ -22,12 +23,10 @@ from typerbot.demo.world import CSV_BOOKS_1X2, ODDS_API_BOOKS, UK, DemoMatch, De
 
 HOSTS = {
     "api.football-data.org": "football_data_org",
-    "v3.football.api-sports.io": "api_football",
     "api.the-odds-api.com": "the_odds_api",
     "www.football-data.co.uk": "football_data_csv",
     "api.oddspapi.io": "oddspapi",
 }
-APIF_FREE_SEASONS = (2022, 2024)
 PAPI_TOURNAMENTS = {17: ("PL", "england", "premier-league", "Premier League"),
                     202: ("EKS", "poland", "ekstraklasa", "Ekstraklasa")}
 # Identyfikatory rynków w trybie demo (1X2 = 101 jak w prawdziwym API, pozostałe przykładowe).
@@ -47,7 +46,6 @@ PAPI_MARKETS = [
 ]
 SUPERBET_MARGIN = 0.07
 FDORG_CODES = {"PL": "PL"}
-APIF_LEAGUES = {39: "PL", 106: "EKS"}
 ODDS_KEYS = {"soccer_epl": "PL", "soccer_poland_ekstraklasa": "EKS"}
 CSV_MAIN = {"E0": "PL"}
 CSV_EXTRA = {"POL": "EKS"}
@@ -58,13 +56,13 @@ def _iso(dt: datetime) -> str:
 
 
 class DemoTransport:
-    def __init__(self, world: DemoWorld, *, fail: set[str] | None = None, apif_plan_restricted: bool = True,
-                 apif_used_today: int = 3, odds_used: int = 42):
+    def __init__(self, world: DemoWorld, *, fail: set[str] | None = None, odds_used: int = 42,
+                 fixtures_days: int = 7, extra_fixtures: bool = True):
         self.world = world
         self.fail = set(fail or ())
-        self.apif_plan_restricted = apif_plan_restricted
-        self.apif_used = apif_used_today
         self.odds_used = odds_used
+        self.fixtures_days = fixtures_days       # ile dni naprzód obejmuje fixtures.csv
+        self.extra_fixtures = extra_fixtures     # False – plik lig 'extra' nieaktualny (pusty)
         self.calls: list[str] = []
 
     def __call__(self, url: str, params: Mapping[str, Any], headers: Mapping[str, str], timeout: float) -> HttpResponse:
@@ -114,62 +112,6 @@ class DemoTransport:
             },
         }
 
-    # -- API-Football -------------------------------------------------------------------
-    def _api_football(self, path: str, params: dict, headers: dict) -> HttpResponse:
-        if not headers.get("x-apisports-key"):
-            return _json(200, {"errors": {"token": "Error/Missing application key."}, "response": []})
-        if path != "/status":
-            self.apif_used += 1
-        hdr = {"x-ratelimit-requests-limit": "100", "x-ratelimit-requests-remaining": str(100 - self.apif_used),
-               "x-ratelimit-limit": "10", "x-ratelimit-remaining": "9"}
-        if path == "/status":
-            return _json(200, {"errors": [], "response": {
-                "account": {"firstname": "Demo"}, "subscription": {"plan": "Free", "active": True},
-                "requests": {"current": self.apif_used, "limit_day": 100}}}, hdr)
-        if path == "/fixtures":
-            league = APIF_LEAGUES.get(int(params.get("league", 0)))
-            season = int(params.get("season", 0))
-            lo_s, hi_s = APIF_FREE_SEASONS
-            if self.apif_plan_restricted and not lo_s <= season <= hi_s:
-                return _json(200, {"errors": {"plan": f"Free plans do not have access to this season, "
-                                                      f"try from {lo_s} to {hi_s}."}, "response": []}, hdr)
-            lo = date.fromisoformat(params["from"]) if "from" in params else date(season, 7, 1)
-            hi = date.fromisoformat(params["to"]) if "to" in params else date(season + 1, 6, 30)
-            items = [self._apif_fixture(m) for m in self.world.league_matches(league or "")
-                     if m.season == season and lo <= m.kickoff.date() <= hi]
-            return _json(200, {"errors": [], "results": len(items), "response": items}, hdr)
-        if path == "/fixtures/statistics":
-            fid = int(params.get("fixture", 0))
-            match = next((m for m in self.world.matches if m.apif_id == fid), None)
-            if match is None or not self.world.is_finished(match):
-                return _json(200, {"errors": [], "response": []}, hdr)
-            return _json(200, {"errors": [], "response": [
-                self._apif_stats(match.home, match.home_xg, match.home_shots, match.home_sot),
-                self._apif_stats(match.away, match.away_xg, match.away_shots, match.away_sot),
-            ]}, hdr)
-        return _json(200, {"errors": {"endpoint": "unknown"}, "response": []}, hdr)
-
-    def _apif_fixture(self, m: DemoMatch) -> dict:
-        finished = self.world.is_finished(m)
-        short = "FT" if finished else ("2H" if self.world.is_live(m) else "NS")
-        goals = {"home": m.home_goals, "away": m.away_goals} if finished else {"home": None, "away": None}
-        return {
-            "fixture": {"id": m.apif_id, "date": m.kickoff.isoformat(), "status": {"short": short}},
-            "league": {"id": 39 if m.league == "PL" else 106, "season": m.season, "round": f"Regular Season - {m.round}"},
-            "teams": {"home": {"id": m.home.apif_id, "name": m.home.apif}, "away": {"id": m.away.apif_id, "name": m.away.apif}},
-            "goals": goals,
-            "score": {"fulltime": goals},
-        }
-
-    @staticmethod
-    def _apif_stats(team, xg: float, shots: int, sot: int) -> dict:
-        return {"team": {"id": team.apif_id, "name": team.apif}, "statistics": [
-            {"type": "Shots on Goal", "value": sot},
-            {"type": "Total Shots", "value": shots},
-            {"type": "Ball Possession", "value": "50%"},
-            {"type": "expected_goals", "value": f"{xg:.2f}"},
-        ]}
-
     # -- The Odds API ---------------------------------------------------------------------
     def _the_odds_api(self, path: str, params: dict, headers: dict) -> HttpResponse:
         if not params.get("apiKey"):
@@ -177,6 +119,12 @@ class DemoTransport:
         if path == "/v4/sports":
             return _json(200, [{"key": k, "group": "Soccer", "title": k, "active": True} for k in ODDS_KEYS],
                          self._odds_headers(0))
+        m = re.match(r"/v4/sports/([\w]+)/events$", path)
+        if m and m.group(1) in ODDS_KEYS:
+            events = [{"id": x.odds_id, "sport_key": m.group(1), "commence_time": _iso(x.kickoff),
+                       "home_team": x.home.odds, "away_team": x.away.odds}
+                      for x in self.world.upcoming(ODDS_KEYS[m.group(1)])]
+            return _json(200, events, self._odds_headers(0))
         m = re.match(r"/v4/sports/([\w]+)/(odds|scores|events/(\w+)/odds)", path)
         if not m or m.group(1) not in ODDS_KEYS:
             return _json(404, {"message": "Unknown sport"})
@@ -275,9 +223,9 @@ class DemoTransport:
 
     def _papi_fixture(self, m: DemoMatch) -> dict:
         status = 2 if self.world.is_finished(m) else (1 if self.world.is_live(m) else 0)
-        name = (lambda t: t.apif) if m.league == "PL" else (lambda t: t.odds)
+        name = (lambda t: t.alt) if m.league == "PL" else (lambda t: t.odds)
         return {"fixtureId": self._papi_id(m), "tournamentId": 17 if m.league == "PL" else 202,
-                "participant1Id": m.home.apif_id + 50000, "participant2Id": m.away.apif_id + 50000,
+                "participant1Id": m.home.alt_id + 50000, "participant2Id": m.away.alt_id + 50000,
                 "participant1Name": name(m.home), "participant2Name": name(m.away),
                 "startTime": _iso(m.kickoff), "statusId": status}
 
@@ -305,11 +253,54 @@ class DemoTransport:
             if not rows:
                 return HttpResponse(404, {}, b"Not Found")
             return HttpResponse(200, {"content-type": "text/csv"}, self._csv_main(rows).encode("utf-8"))
+        if path == "/fixtures.csv":
+            return HttpResponse(200, {"content-type": "text/csv"}, self._csv_fixtures_main().encode("utf-8"))
+        if path == "/new_league_fixtures.csv":
+            return HttpResponse(200, {"content-type": "text/csv"}, self._csv_fixtures_extra().encode("utf-8"))
         m = re.match(r"/new/(\w+)\.csv", path)
         if m and m.group(1) in CSV_EXTRA:
             rows = [x for x in self.world.league_matches(CSV_EXTRA[m.group(1)]) if self._csv_ready(x)]
             return HttpResponse(200, {"content-type": "text/csv"}, self._csv_extra(rows).encode("utf-8"))
         return HttpResponse(404, {}, b"Not Found")
+
+    def _upcoming_csv(self, league: str) -> list[DemoMatch]:
+        end = self.world.now + timedelta(days=self.fixtures_days)
+        return [m for m in self.world.league_matches(league) if self.world.now < m.kickoff <= end]
+
+    def _csv_fixtures_main(self) -> str:
+        buf = io.StringIO()
+        cols = ["Div", "Date", "Time", "HomeTeam", "AwayTeam", "Referee"]
+        cols += [f"{b}{s}" for b in CSV_BOOKS_1X2 for s in "HDA"]
+        cols += [f"{b}{s}2.5" for b in ("B365", "P", "Max", "Avg") for s in "><"]
+        w = csv.writer(buf)
+        w.writerow(cols)
+        ou_books = {"B365": 0.065, "P": 0.025, "Max": 0.010, "Avg": 0.055}
+        for code, league in CSV_MAIN.items():
+            for m in self._upcoming_csv(league):
+                local = m.kickoff.astimezone(UK)
+                row = [code, local.strftime("%d/%m/%Y"), local.strftime("%H:%M"), m.home.csv, m.away.csv, ""]
+                row += [self.world.odds_for(m, mg)[s] for mg in CSV_BOOKS_1X2.values() for s in "HDA"]
+                row += [self.world.odds_for(m, mg)[s] for mg in ou_books.values() for s in "OU"]
+                w.writerow(row)
+        return buf.getvalue()
+
+    def _csv_fixtures_extra(self) -> str:
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["Country", "League", "Date", "Time", "Home", "Away", "PSH", "PSD", "PSA", "MaxH", "MaxD", "MaxA",
+                    "AvgH", "AvgD", "AvgA", "B365H", "B365D", "B365A"])
+        if not self.extra_fixtures:
+            return buf.getvalue()
+        for league in CSV_EXTRA.values():
+            for m in self._upcoming_csv(league):
+                local = m.kickoff.astimezone(UK)
+                row = ["Poland", "Ekstraklasa", local.strftime("%d/%m/%Y"), local.strftime("%H:%M"),
+                       m.home.csv, m.away.csv]
+                for mg in (0.025, 0.010, 0.055, 0.065):
+                    o = self.world.odds_for(m, mg)
+                    row += [o["H"], o["D"], o["A"]]
+                w.writerow(row)
+        return buf.getvalue()
 
     def _csv_ready(self, m: DemoMatch) -> bool:
         return m.kickoff + timedelta(days=2) <= self.world.now  # pliki są aktualizowane z opóźnieniem

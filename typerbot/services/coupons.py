@@ -298,13 +298,6 @@ class CouponService:
             legs.append(leg)
         return replace(coupon, legs=legs)
 
-    def top_candidate_matches(self, cfg: CouponSettings, n: int = 10) -> list[int]:
-        """Mecze z najlepszymi typami – dla nich warto dociągnąć kursy BTTS i podwójnej szansy."""
-        best: dict[int, float] = {}
-        for c in self.candidates(cfg):
-            best[c.match_id] = max(best.get(c.match_id, 0.0), c.probability)
-        return [mid for mid, _ in sorted(best.items(), key=lambda x: -x[1])[:n]]
-
 
 def _range(cfg: CouponSettings) -> tuple[float, float]:
     return cfg.target_odds * (1 - cfg.tolerance), cfg.target_odds * (1 + cfg.tolerance)

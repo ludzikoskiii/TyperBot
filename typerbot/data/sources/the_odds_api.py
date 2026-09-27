@@ -1,9 +1,10 @@
-"""The Odds API (v4) – kursy przedmeczowe.
+"""The Odds API (v4) – uzupełnienie brakujących kursów i terminarza.
 
-Plan darmowy: 500 kredytów miesięcznie. Koszt zapytania = liczba rynków ×
-liczba regionów. Rynki h2h (1X2) i totals (powyżej/poniżej) pobieramy dla
-całej ligi naraz; btts i double_chance są dostępne tylko zapytaniem dla
-pojedynczego meczu, dlatego pobieramy je oszczędnie – dla kandydatów na kupon.
+Plan darmowy (bez karty): 500 kredytów miesięcznie. Koszt zapytania o kursy =
+liczba rynków × liczba regionów. Lista meczów (/events) i lista rozgrywek (/sports)
+są bezpłatne – z nich bierzemy terminarz lig, których nie obejmują inne źródła.
+Kursy pobieramy tylko dla lig z brakującymi kursami 1X2 / powyżej-poniżej,
+najwyżej raz dziennie i w ramach budżetu (patrz services/sync.py).
 Dokumentacja: https://the-odds-api.com/liveapi/guides/v4/
 """
 
@@ -21,7 +22,7 @@ from typerbot.data.sources.base import ApiSource
 from typerbot.data.teams import normalize
 
 BULK_MARKETS = ("h2h", "totals")
-EVENT_MARKETS = ("btts", "double_chance")
+MARKET_KEYS = {MARKET_1X2: "h2h", MARKET_OU: "totals"}   # rynki, które uzupełniamy z tego źródła
 MARKET_MAP = {"h2h": MARKET_1X2, "totals": MARKET_OU, "btts": MARKET_BTTS, "double_chance": MARKET_DC}
 
 
@@ -88,17 +89,12 @@ class TheOddsApi(ApiSource):
         )
         return [rec for rec in (self.parse_event(e, league) for e in data or []) if rec is not None]
 
-    def event_odds(self, league: League, event_id: str, *, region: str, ttl: float,
-                   markets: tuple[str, ...] = EVENT_MARKETS) -> MatchRecord | None:
+    def events(self, league: League, *, ttl: float) -> list[MatchRecord]:
+        """Nadchodzące mecze ligi bez kursów – zapytanie bezpłatne (nie zużywa kredytów)."""
         if not league.odds_api_key:
-            return None
-        data = self.request(
-            f"/sports/{league.odds_api_key}/events/{event_id}/odds",
-            {"regions": region, "markets": ",".join(markets), "oddsFormat": "decimal", "dateFormat": "iso"},
-            ttl=ttl,
-            cost=len(markets) * len(region.split(",")),
-        )
-        return self.parse_event(data, league) if isinstance(data, dict) else None
+            return []
+        data = self.request(f"/sports/{league.odds_api_key}/events", {"dateFormat": "iso"}, ttl=ttl, cost=0)
+        return [rec for rec in (self.parse_event(e, league) for e in data or []) if rec is not None]
 
     def scores(self, league: League, days_from: int = 3, *, ttl: float) -> list[MatchRecord]:
         """Wyniki zakończonych meczów – zapasowe źródło do rozliczania kuponów."""

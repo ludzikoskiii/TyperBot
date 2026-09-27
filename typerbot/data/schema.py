@@ -212,4 +212,15 @@ MIGRATIONS: list[str] = [
 ]
 
 
+# --- v4: aplikacja korzysta wyłącznie z darmowych źródeł – usunięte API-Football -------------------
+MIGRATIONS.append(
+    """
+    DELETE FROM source_status WHERE source = 'api_football';
+    DELETE FROM api_quota WHERE source = 'api_football';
+    DELETE FROM http_cache WHERE source = 'api_football';
+    DELETE FROM history_files WHERE source = 'api_football';
+    DELETE FROM settings WHERE key IN ('meta.api_football_seasons', 'meta.last_sync');
+    """
+)
+
 SCHEMA_VERSION = len(MIGRATIONS)

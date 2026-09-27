@@ -1,7 +1,7 @@
 """Syntetyczny „świat” meczów do trybu demo i testów.
 
 Generuje dwie ligi (Premier League, Ekstraklasa) z ukrytą prawdziwą siłą
-drużyn, wynikami z rozkładu Poissona, kursami kilku bukmacherów i xG.
+drużyn, wynikami z rozkładu Poissona i kursami kilku bukmacherów.
 Każde źródło dostaje inne warianty nazw drużyn – tak jak w rzeczywistości –
 co pozwala sprawdzić dopasowanie nazw. Znana „prawda” przyda się też
 w etapie 2 do testu, czy model odzyskuje parametry.
@@ -20,7 +20,7 @@ import numpy as np
 UK = ZoneInfo("Europe/London")
 WARSAW = ZoneInfo("Europe/Warsaw")
 
-# nazwa kanoniczna: (football-data.co.uk, football-data.org, API-Football, The Odds API)
+# nazwa kanoniczna: (football-data.co.uk, football-data.org, nazwa alternatywna (OddsPapi), The Odds API)
 PL_TEAMS: dict[str, tuple[str, str | None, str, str]] = {
     "Arsenal": ("Arsenal", "Arsenal FC", "Arsenal", "Arsenal"),
     "Aston Villa": ("Aston Villa", "Aston Villa FC", "Aston Villa", "Aston Villa"),
@@ -84,7 +84,7 @@ class DemoTeam:
     attack: float
     defence: float
     fdorg_id: int
-    apif_id: int
+    alt_id: int
 
     @property
     def csv(self) -> str:
@@ -95,7 +95,7 @@ class DemoTeam:
         return self.names[1]
 
     @property
-    def apif(self) -> str:
+    def alt(self) -> str:
         return self.names[2]
 
     @property
@@ -127,10 +127,6 @@ class DemoMatch:
     @property
     def fdorg_id(self) -> int:
         return 500000 + self.seq
-
-    @property
-    def apif_id(self) -> int:
-        return 1200000 + self.seq
 
     @property
     def odds_id(self) -> str:
@@ -173,7 +169,7 @@ class DemoWorld:
             spread = 0.30 if league == "PL" else 0.18
             self.teams[league] = {
                 key: DemoTeam(key, names, float(rng.normal(0, spread)), float(rng.normal(0, spread)),
-                              fdorg_id=100 + i + (0 if league == "PL" else 1000), apif_id=30 + i + (0 if league == "PL" else 3000))
+                              fdorg_id=100 + i + (0 if league == "PL" else 1000), alt_id=30 + i + (0 if league == "PL" else 3000))
                 for i, (key, names) in enumerate(table.items())
             }
         self.matches: list[DemoMatch] = []

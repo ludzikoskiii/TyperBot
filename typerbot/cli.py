@@ -2,12 +2,11 @@
 
   python -m typerbot demo                 synchronizacja na danych syntetycznych
   python -m typerbot demo --awaria the_odds_api   (symulacja awarii źródła)
-  python -m typerbot klucz api_football   zapis klucza API w Menedżerze poświadczeń
+  python -m typerbot klucz the_odds_api   zapis klucza API w Menedżerze poświadczeń
   python -m typerbot sync [--force]       pobranie prawdziwych danych
   python -m typerbot status               zużycie limitów i stan źródeł
   python -m typerbot mecze [--dni 3]      nadchodzące mecze z kursami
   python -m typerbot druzyny              dopasowania nazw do sprawdzenia
-  python -m typerbot csv wlacz|wylacz     import CSV z football-data.co.uk (domyślnie włączony)
   python -m typerbot prognozy [--dni 3]   prognozy modelu dla nadchodzących meczów
   python -m typerbot backtest [--ligi PL,EKS] [--sezony 2023,2024,2025]
   python -m typerbot strojenie [--zapisz] dobór parametrów modelu na historii
@@ -32,15 +31,13 @@ from typerbot.config.secrets import KEYED_SOURCES, MemorySecretStore, SecretStor
 from typerbot.data.db import Database
 from typerbot.data.errors import STATE_LABELS
 from typerbot.data.repository import odds_view
+from typerbot.data.sources import SOURCE_LABELS
 from typerbot.logging_setup import setup_logging
 from typerbot.paths import db_path
 from typerbot.services.sync import SyncReport, SyncService
 
 LOCAL = ZoneInfo("Europe/Warsaw")
-STEP_LABELS = {"history": "historia", "fixtures": "terminarz/wyniki", "odds": "kursy", "xg": "xG",
-               "results": "wyniki", "event_odds": "kursy BTTS/DC"}
-SOURCE_LABELS = {"football_data_org": "football-data.org", "api_football": "API-Football",
-                 "the_odds_api": "The Odds API", "oddspapi": "OddsPapi", "football_data_csv": "football-data.co.uk"}
+STEP_LABELS = {"history": "historia", "fixtures": "terminarz/wyniki", "odds": "brakujące kursy", "results": "wyniki"}
 
 
 def _out(text: str = "") -> None:
@@ -76,6 +73,10 @@ def print_status(service: SyncService) -> None:
         _out(f"  {q.label:<22}{period_pl.get(q.period, q.period):<9}{used:>8}{limit:>8}{rem:>9}  "
              f"{q.calls_today:>12}  {state} [{src}]")
     _out(f"  Cache: {service.http.cache_hits} trafień, {service.http.network_calls} zapytań sieciowych w tej sesji")
+    _out("\nŹródła z limitem – tylko uzupełnienie brakujących kursów (budżet aplikacji < limit planu):")
+    for e in service.usage_estimates():
+        _out(f"  {e.label:<14} zużyto {e.used_month}/{e.plan_limit} (budżet aplikacji {e.app_limit}), dziś {e.used_today}, "
+             f"maks. {e.daily_allowance}/dzień, szacunek na miesiąc ≈ {e.projected}")
     counts = service.matches.counts()
     _out("\nBaza danych")
     _out(f"  ligi aktywne: {counts['leagues']}, drużyny: {counts['teams']}, mecze: {counts['matches']} "
@@ -161,10 +162,6 @@ def cmd_demo(args: argparse.Namespace) -> int:
     service = SyncService(db, secrets, transport=transport, now=lambda: now, rate_limits=False)
     for league in service.leagues.all():
         service.leagues.set_enabled(league.code, league.code in ("PL", "EKS"))
-    if args.bez_csv:
-        settings = service.settings()
-        settings.sync.csv_import = False
-        service.settings_store.save(settings)
     _out(f"TRYB DEMO – dane syntetyczne, baza tymczasowa: {tmp / 'demo.db'}")
     if args.awaria:
         _out(f"Symulowana awaria: {', '.join(args.awaria)}")
@@ -174,8 +171,6 @@ def cmd_demo(args: argparse.Namespace) -> int:
     report2 = service.run_all()
     _out(f"Druga synchronizacja: {sum(1 for s in report2.steps if s.state == 'ok')} kroków OK, "
          f"{service.http.network_calls} zapytań sieciowych łącznie (reszta z cache/bazy)\n")
-    candidates = [r["id"] for r in service.matches.matches_between(now, now + timedelta(days=3))][:3]
-    service.run(lambda rep: service.sync_event_markets(rep, candidates))
     print_status(service)
     print_coverage(service)
     print_matches(service, 4)
@@ -211,7 +206,7 @@ def cmd_key(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     service = _real_service()
-    report = service.run_all(force=args.force, xg=not args.bez_xg)
+    report = service.run_all(force=args.force)
     print_report(report)
     print_status(service)
     print_coverage(service)
@@ -239,13 +234,6 @@ def cmd_teams(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_csv(args: argparse.Namespace) -> int:
-    service = _real_service()
-    settings = service.settings()
-    settings.sync.csv_import = args.stan == "wlacz"
-    service.settings_store.save(settings)
-    _out("Import CSV z football-data.co.uk: " + ("WŁĄCZONY" if settings.sync.csv_import else "wyłączony"))
-    return 0
 
 
 def _demo_coupons(db: Database, now: datetime) -> None:
@@ -386,7 +374,7 @@ def cmd_selections(args: argparse.Namespace) -> int:
 def cmd_coupon(args: argparse.Namespace) -> int:
     from typerbot.cli_coupons import run_coupon_command
 
-    sync = _real_service() if args.dociagnij or getattr(args, "diagnoza", False) else None
+    sync = _real_service() if getattr(args, "diagnoza", False) else None
     return run_coupon_command(sync.db if sync else Database(db_path()), args, sync_service=sync)
 
 
@@ -452,7 +440,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("demo", help="synchronizacja na danych syntetycznych (bez kluczy i internetu)")
     p.add_argument("--awaria", action="append", choices=list(SOURCE_LABELS), help="symuluj awarię źródła")
-    p.add_argument("--bez-csv", action="store_true", help="wyłącz import CSV z football-data.co.uk")
     p.add_argument("--backtest", action="store_true", help="uruchom też backtest modelu na danych demo")
     _add_backtest_args(p)
     p.set_defaults(func=cmd_demo)
@@ -464,7 +451,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("sync", help="pobierz dane z prawdziwych źródeł")
     p.add_argument("--force", action="store_true", help="pomiń cache")
-    p.add_argument("--bez-xg", action="store_true", help="nie pobieraj xG")
     p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("status", help="limity API i stan źródeł")
@@ -473,10 +459,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("mecze", help="nadchodzące mecze z kursami")
     p.add_argument("--dni", type=int, default=3)
     p.set_defaults(func=cmd_matches)
-
-    p = sub.add_parser("csv", help="włącz/wyłącz import plików CSV z football-data.co.uk")
-    p.add_argument("stan", choices=["wlacz", "wylacz"])
-    p.set_defaults(func=cmd_csv)
 
     p = sub.add_parser("prognozy", help="prognozy modelu dla nadchodzących meczów")
     p.add_argument("--dni", type=int, default=3)
@@ -498,14 +480,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wymien", help="zdarzenie do wymiany, np. A2 (kupon A, pozycja 2)")
     p.add_argument("--na", type=int, help="numer zamiennika z listy")
     p.add_argument("--kurs-reczny", action="append", help="kurs z oferty bukmachera, np. A2=1,95")
-    p.add_argument("--dociagnij", action="store_true", help="dociągnij kursy BTTS/DC dla najlepszych meczów")
-    p.add_argument("--dociagnij-ile", type=int, default=10)
     p.add_argument("--krotko", action="store_true", help="bez uzasadnień")
     p.set_defaults(func=cmd_coupon)
 
     p = sub.add_parser("diagnoza", help="dlaczego nie ma kuponu: źródła, kursy i mecze po każdym filtrze")
     add_coupon_args(p)
-    p.set_defaults(func=cmd_coupon, diagnoza=True, dociagnij=False)
+    p.set_defaults(func=cmd_coupon, diagnoza=True)
 
     p = sub.add_parser("strojenie", help="dobór parametrów modelu na historii (siatka + backtest)")
     p.add_argument("--ligi")

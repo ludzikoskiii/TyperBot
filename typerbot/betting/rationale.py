@@ -144,7 +144,7 @@ def build_rationale(db: Database, sel: SelectionEval, match: dict, lam_home: flo
         lines.append("Średnie xG w ostatnich meczach: " + ", ".join(xg_parts))
     notes = list(flags or [])
     if sel.odds_source == "estimated":
-        notes.append("kurs szacowany z 1X2 – sprawdź ofertę bukmachera")
+        notes.append("kurs szacunkowy (wyliczony z kursów 1X2 – brak go w źródłach) – sprawdź ofertę bukmachera")
     if notes:
         lines.append("Uwaga: " + "; ".join(notes))
     return lines

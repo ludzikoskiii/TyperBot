@@ -28,9 +28,8 @@ if TYPE_CHECKING:
     from typerbot.services.coupons import Coupon, CouponService
 
 LOCAL = ZoneInfo("Europe/Warsaw")
-STEP_LABELS = {"history": "historia", "fixtures": "terminarz", "odds": "kursy", "xg": "xG", "results": "wyniki",
-               "event_odds": "kursy BTTS/DC"}
-ODDS_STEPS = ("odds", "event_odds")
+STEP_LABELS = {"history": "historia", "fixtures": "terminarz", "odds": "brakujące kursy", "results": "wyniki"}
+ODDS_STEPS = ("odds",)
 STATE_HINTS = {
     "no_key": "wpisz klucz w Ustawieniach",
     "auth": "sprawdź klucz w Ustawieniach (bez spacji)",
@@ -283,10 +282,12 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
             hints.append("Zaznacz więcej rynków (np. 1X2 i powyżej/poniżej 2,5).")
             return
         why = _blockers(report, ODDS_STEPS, {info.league for info, _ in evaluated.values()})
+        horizon = service.settings().sync.odds_horizon_days
         reasons.append(f"Brak kursów dla {plural(len(evaluated), 'meczu', 'meczów', 'meczów')}"
                        + (f": {'; '.join(why)}." if why else " – kursy nie zostały jeszcze pobrane."))
         hints.extend(_state_hints(report, ODDS_STEPS, leagues))
-        hints.append("Kliknij „Odśwież dane”. Kursy zwykle pojawiają się 2–5 dni przed meczem – "
+        hints.append("Kliknij „Odśwież dane”. Pliki football-data.co.uk z kursami pojawiają się zwykle 2–4 dni "
+                     f"przed kolejką, a brakujące kursy uzupełniamy dla meczów z najbliższych {horizon} dni – "
                      "wybierz bliższy zakres dat.")
         return
 

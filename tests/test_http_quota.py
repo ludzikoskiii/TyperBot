@@ -2,11 +2,11 @@ import json
 
 import pytest
 
-from typerbot.data.errors import AuthError, PlanRestrictionError, QuotaExceededError, SourceUnavailableError
+from typerbot.data.errors import QuotaExceededError, SourceUnavailableError
 from typerbot.data.http import HttpClient, HttpResponse
 from typerbot.data.quota import QuotaTracker
 from typerbot.data.ratelimit import RateLimiter
-from typerbot.data.sources import ApiFootball, TheOddsApi
+from typerbot.data.sources import TheOddsApi
 
 
 class ScriptedTransport:
@@ -109,37 +109,10 @@ def test_odds_api_budget_blocks_expensive_call(db, clock, secrets):
     assert transport.calls == []  # nie wysłano zapytania
 
 
-def test_api_football_errors_in_200_body_are_typed_and_not_cached(db, clock, secrets):
-    quota = QuotaTracker(db, clock)
-    plan = ok({"errors": {"plan": "Free plans do not have access to this season, try from 2022 to 2024."},
-               "response": []})
-    token = ok({"errors": {"token": "Error/Missing application key."}, "response": []})
-    limit = ok({"errors": {"requests": "You have reached the request limit for the day"}, "response": []})
-    transport = ScriptedTransport(plan, token, limit)
-    src = ApiFootball(HttpClient(db, transport, clock), quota, secrets, limiter=RateLimiter(None), clock=clock)
-    with pytest.raises(PlanRestrictionError):
-        src.request("/fixtures", {"league": 39, "season": 2026}, ttl=3600)
-    with pytest.raises(AuthError):
-        src.request("/fixtures", {"league": 39, "season": 2025}, ttl=3600)
-    with pytest.raises(QuotaExceededError):
-        src.request("/fixtures", {"league": 39, "season": 2024}, ttl=3600)
-    assert db.query_one("SELECT COUNT(*) FROM http_cache")[0] == 0
-
-
-def test_api_football_daily_budget_from_headers(db, clock, secrets):
-    quota = QuotaTracker(db, clock)
-    transport = ScriptedTransport(ok({"errors": [], "response": []}, x_ratelimit_requests_limit=100,
-                                     x_ratelimit_requests_remaining=0))
-    src = ApiFootball(HttpClient(db, transport, clock), quota, secrets, limiter=RateLimiter(None), clock=clock)
-    src.request("/fixtures", {"league": 39, "season": 2024})
-    with pytest.raises(QuotaExceededError):
-        src.request("/fixtures", {"league": 39, "season": 2023})
-
-
 def test_quota_header_info_expires_with_period(db, clock):
     quota = QuotaTracker(db, clock)
-    quota.update("api_football", "day", limit=100, remaining=5)
-    assert quota.get("api_football", "day", 100).remaining == 5
+    quota.update("some_api", "day", limit=100, remaining=5)
+    assert quota.get("some_api", "day", 100).remaining == 5
     clock.advance(24 * 3600)  # następny dzień – limit dzienny się odnawia
-    info = quota.get("api_football", "day", 100)
+    info = quota.get("some_api", "day", 100)
     assert info.remaining == 100 and not info.from_headers

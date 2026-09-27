@@ -33,7 +33,7 @@ def test_settings_roundtrip_and_defaults(db):
     s = store.load()
     assert s.tax.stake_tax == 0.12 and s.tax.win_tax_threshold == 2280.0
     assert s.odds.bookmaker == "superbet" and s.odds.reference == "bookmaker"
-    assert s.sync.csv_import is True
+    assert s.sync.csv_seasons == 10 and s.sync.odds_api_monthly_budget < 500 and s.sync.oddspapi_monthly_budget < 250
     s.coupon.target_odds = 7.5
     s.model.last_matches = 12
     store.save(s)
@@ -50,10 +50,10 @@ def test_settings_ignore_unknown_and_bad_types():
 
 def test_secret_store_and_mask():
     store = MemorySecretStore()
-    assert not store.has("api_football")
-    store.set("api_football", "  abcdef123456  ")
-    assert store.get("api_football") == "abcdef123456"
-    assert mask(store.get("api_football")).endswith("3456")
-    assert "abcdef" not in mask(store.get("api_football"))
-    store.delete("api_football")
-    assert store.get("api_football") is None
+    assert not store.has("the_odds_api")
+    store.set("the_odds_api", "  abcdef123456  ")
+    assert store.get("the_odds_api") == "abcdef123456"
+    assert mask(store.get("the_odds_api")).endswith("3456")
+    assert "abcdef" not in mask(store.get("the_odds_api"))
+    store.delete("the_odds_api")
+    assert store.get("the_odds_api") is None

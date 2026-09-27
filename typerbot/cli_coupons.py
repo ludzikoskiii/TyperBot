@@ -112,11 +112,6 @@ def run_coupon_command(db: Database, args: argparse.Namespace, sync_service=None
     service = CouponService(db)
     cfg = coupon_settings_from_args(service.settings().coupon, args)
     service.evaluate(cfg)
-    if getattr(args, "dociagnij", False) and sync_service is not None:
-        ids = service.top_candidate_matches(cfg, n=args.dociagnij_ile)
-        _out(f"Dociągam kursy BTTS i podwójnej szansy dla {len(ids)} meczów (The Odds API)…")
-        sync_service.run(lambda rep: sync_service.sync_event_markets(rep, ids))
-        service.evaluate(cfg)
     secrets = getattr(sync_service, "secrets", None)
     result = service.run(cfg, evaluate=False, secrets=secrets)
     coupons = result.coupons

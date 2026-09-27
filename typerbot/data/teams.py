@@ -39,7 +39,6 @@ _SPECIAL = str.maketrans({
 
 SOURCE_PRIORITY = {
     "manual": 5,
-    "api_football": 4,
     "the_odds_api": 3,
     "oddspapi": 3,
     "football_data_org": 2,

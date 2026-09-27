@@ -33,7 +33,7 @@ class UpsertResult:
     created: bool
 
 
-_LEAGUE_COLUMNS = ("code", "name", "country", "is_cup", "fd_org_code", "api_football_id", "odds_api_key",
+_LEAGUE_COLUMNS = ("code", "name", "country", "is_cup", "fd_org_code", "odds_api_key",
                    "oddspapi_id", "fdcuk_code", "fdcuk_format", "enabled", "sort_order")
 
 

@@ -42,10 +42,10 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
    python -m typerbot gui --demo   # interfejs w trybie demo – bez kluczy i internetu (dane syntetyczne)
    ```
 
-4. Wpisz klucze API w zakładce **Ustawienia** (opis niżej) i kliknij **Odśwież dane**.
-   **Pierwsza synchronizacja trwa kilka minut** – pobiera 7 sezonów historii (pliki CSV), sezony
-   2022–2024 z API-Football i xG w ramach dziennego limitu. Postęp widać w pasku stanu na dole;
-   kolejne odświeżenia trwają kilka sekund.
+4. Kliknij **Odśwież dane** – działa bez żadnego klucza. Opcjonalnie wpisz darmowe klucze w zakładce
+   **Ustawienia** (opis niżej) – uzupełniają terminarz i brakujące kursy.
+   **Pierwsza synchronizacja trwa kilka minut** – pobiera 10 sezonów historii z plików football-data.co.uk
+   (bez klucza). Postęp widać w pasku stanu na dole; kolejne odświeżenia trwają kilka sekund.
 5. W zakładce **Statystyki → Backtest modelu** kliknij **Strojenie parametrów**, a potem
    **Zapisz najlepsze ustawienia** – model i udział modelu w prognozie zostaną dobrane do Twoich danych.
 
@@ -71,7 +71,7 @@ test `TyperBot.exe --self-test`. Folder można skopiować na inny komputer z Win
 
 | Zakładka | Co zawiera |
 |---|---|
-| **Mecze** | nadchodzące mecze z prognozą 1 / X / 2 / >2,5 / BTTS (paski), liczba typów value; po kliknięciu meczu – wszystkie typy (prognoza, model, rynek, kurs, implikowane, EV, EV po podatku; value na zielono) i opis: forma, średnie, xG, bilans spotkań |
+| **Mecze** | nadchodzące mecze z prognozą 1 / X / 2 / >2,5 / BTTS (paski), liczba typów value; po kliknięciu meczu – wszystkie typy (prognoza, model, rynek, kurs, implikowane, EV, EV po podatku; value na zielono) i opis: forma, średnie, bilans spotkań |
 | **Generator kuponu** | kurs docelowy i tolerancja, zakres dat (dziś / jutro / X dni / własny), liczba zdarzeń, min. prawdopodobieństwo, tryb, ligi, rynki, stawka → 3 kupony z kursem przed/po podatku, szansą trafienia (prognoza, model, rynek), EV i wygraną; uzasadnienie każdego typu; **Wymień zdarzenie…**, **Zmień kurs…** (kurs z oferty), **Usuń zdarzenie**, **Zapisz jako postawiony…** |
 | **Moje kupony** | rejestr postawionych kuponów, automatyczne rozliczanie po meczach, szczegóły z wynikami, ręczne rozliczenie (np. wcześniejsza wypłata) |
 | **Statystyki** | bilans, ROI, trafność, krzywa bilansu, wynik w miesiącach, podział na rynki i ligi; podzakładka **Backtest modelu** ze skutecznością, kalibracją (wykres), wynikiem finansowym, mieszanką model + rynek i **strojeniem** parametrów |
@@ -97,25 +97,27 @@ W „Moje kupony” jest **Eksportuj do CSV…** (plik otwiera się w polskim Ex
 
 ## Klucze API
 
-Wszystkie źródła mają darmowe plany. Klucz wpisujesz w **Ustawieniach** (albo poleceniem `klucz`) – trafia do
-**Menedżera poświadczeń Windows** (biblioteka `keyring`), nigdy do bazy ani plików projektu.
-Wpisywany klucz nie jest wyświetlany.
+Aplikacja jest w pełni darmowa. **Główne źródło – football-data.co.uk – nie wymaga klucza ani rejestracji.**
+Pozostałe źródła mają darmowe plany bez karty płatniczej; ich klucze są opcjonalne i tylko uzupełniają dane.
+Klucz wpisujesz w **Ustawieniach** (albo poleceniem `klucz`) – trafia do **Menedżera poświadczeń Windows**
+(biblioteka `keyring`), nigdy do bazy ani plików projektu.
 
-| Źródło | Jak zdobyć klucz | Polecenie |
-|---|---|---|
-| football-data.org | Rejestracja na <https://www.football-data.org/client/register>, klucz przychodzi mailem | `python -m typerbot klucz football_data_org` |
-| API-Football | Rejestracja na <https://dashboard.api-football.com/register>, klucz w panelu („Account”) | `python -m typerbot klucz api_football` |
-| The Odds API | Na <https://the-odds-api.com> wybierz darmowy plan „Starter”, klucz przychodzi mailem | `python -m typerbot klucz the_odds_api` |
-| OddsPapi | Rejestracja na <https://oddspapi.io>, klucz w panelu po zalogowaniu | `python -m typerbot klucz oddspapi` |
+| Źródło | Klucz | Jak zdobyć | Polecenie |
+|---|---|---|---|
+| football-data.co.uk | niepotrzebny | – | – |
+| football-data.org | zalecany | rejestracja na <https://www.football-data.org/client/register>, klucz przychodzi mailem | `python -m typerbot klucz football_data_org` |
+| The Odds API | opcjonalny | na <https://the-odds-api.com> darmowy plan „Starter”, klucz przychodzi mailem | `python -m typerbot klucz the_odds_api` |
+| OddsPapi | opcjonalny | rejestracja na <https://oddspapi.io>, klucz w panelu po zalogowaniu | `python -m typerbot klucz oddspapi` |
 
-Usunięcie klucza: `python -m typerbot klucz <źródło> --usun`.
+Usunięcie klucza: `python -m typerbot klucz <źródło> --usun`. API-Football zostało usunięte z aplikacji
+(jego darmowy plan nie obejmuje bieżących sezonów) – zapisany wcześniej klucz aplikacja sama kasuje.
 
 ## Praca z prawdziwymi danymi
 
 ```powershell
 python -m typerbot sync            # pobranie danych (kolejne uruchomienia korzystają z cache)
-python -m typerbot sync --force    # pominięcie cache
-python -m typerbot status          # zużycie limitów każdego API i stan źródeł
+python -m typerbot sync --force    # pominięcie cache (uzupełnienia i tak najwyżej raz dziennie)
+python -m typerbot status          # zużycie limitów, szacunek na miesiąc, stan źródeł i problemy
 python -m typerbot mecze --dni 3   # nadchodzące mecze z kursami Superbet (w nawiasie średnia rynkowa)
 python -m typerbot druzyny --liga EKS   # jak nazwy drużyn z różnych źródeł zostały połączone
 python -m typerbot prognozy --dni 3     # prognozy modelu dla nadchodzących meczów
@@ -124,44 +126,49 @@ python -m typerbot backtest --ligi PL,EKS --sezony 2023,2024,2025 --tryb value -
 python -m typerbot strojenie --zapisz   # dobór parametrów modelu na Twojej historii
 python -m typerbot typy --dni 3 --value # ocena typów: prognoza, kurs, implikowane, EV (★ = value)
 python -m typerbot kupon                # 3 kupony wg ustawień (domyślnie kurs 5,00 ±10%, 3 dni)
-python -m typerbot kupon --jutro --kurs 3 --tryb value --ligi PL,EKS --rynki 1X2,DC --stawka 20
+python -m typerbot kupon --jutro --kurs 3 --ligi PL,EKS --rynki 1X2,DC
 python -m typerbot kupon --wymien A2    # zamienniki dla 2. zdarzenia kuponu A
 python -m typerbot kupon --wymien A2 --na 3        # wymiana i przeliczenie kuponu
 python -m typerbot kupon --kurs-reczny A2=1,95     # kurs z oferty bukmachera
-python -m typerbot kupon --dociagnij    # najpierw kursy BTTS/podwójnej szansy dla najlepszych meczów
+python -m typerbot diagnoza             # dlaczego nie ma kuponu (źródła, filtry, powód)
 ```
 
 Baza i logi: `%LOCALAPPDATA%\TyperBot\` (`typerbot.db`, `typerbot.log`).
 
-## Źródła danych i limity (plany darmowe)
+## Źródła danych i limity (wyłącznie darmowe)
 
-| Źródło | Limit | Do czego służy |
+| Źródło | Limit planu | Do czego służy |
 |---|---|---|
-| **API-Football** | 100 zapytań/dzień; plan darmowy obejmuje tylko sezony **2022–2024** | historia wyników wszystkich lig (1 zapytanie = cały sezon ligi), xG do backtestu |
-| **football-data.org** | 10 zapytań/min; tylko **bieżący sezon** | terminarz i wyniki: Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Liga Mistrzów |
-| **OddsPapi** | 250 zapytań/miesiąc | kursy **Superbet** (1 zapytanie na wiele lig), terminarz i wyniki Ekstraklasy, historia kursów |
-| **The Odds API** | 500 kredytów/miesiąc (koszt = rynki × regiony) | kursy wielu bukmacherów → **średnia rynkowa**; BTTS i podwójna szansa dla kandydatów na kupon |
-| **football-data.co.uk** (pliki CSV) | bez limitu | wyniki, strzały i kursy (przedmeczowe i zamknięcia) z 7 sezonów – historia do modelu i **backtestu z kursami**, w tym sezon 2025/26 |
+| **football-data.co.uk** (pliki CSV, bez klucza) | bez limitu | **główne źródło**: wyniki i kursy (1X2, powyżej/poniżej 2,5 – przedmeczowe i zamknięcia) z 10 sezonów do modelu i backtestu; nadchodzące mecze z kursami (`fixtures.csv`, `new_league_fixtures.csv`) |
+| **football-data.org** | 10 zapytań/min, bez limitu miesięcznego | terminarz i szybkie wyniki: Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Liga Mistrzów |
+| **The Odds API** | 500 kredytów/mies. | bezpłatna lista meczów lig spoza football-data.org (Ekstraklasa); **uzupełnienie** brakujących kursów 1X2 i powyżej/poniżej (np. Liga Mistrzów, powyżej/poniżej w Ekstraklasie); wyniki meczów z kuponów w grze, gdy plik CSV jeszcze ich nie ma |
+| **OddsPapi** | 250 zapytań/mies. | **uzupełnienie** brakujących kursów BTTS i podwójnej szansy oraz kursy Superbet – do 5 lig w jednym zapytaniu |
 
-Jak oszczędzamy limity:
-- wszystko trafia do SQLite, zakończone sezony pobierane są tylko raz, odpowiedzi API są w cache;
-- kursy pobierane są tylko dla lig z meczami w wybranym zakresie dat;
-- budżety ustawiasz w opcjach: xG – 50 zapytań/dzień, wyniki z OddsPapi – 60/miesiąc,
-  BTTS/podwójna szansa – 10 meczów/dzień;
+Pokrycie Twoich lig przez football-data.co.uk:
+
+| Liga | Historia i kursy | Nadchodzące mecze z kursami |
+|---|---|---|
+| Premier League, La Liga, Bundesliga, Serie A, Ligue 1 | tak – od lat 90., 1X2 i powyżej/poniżej 2,5 (przedmeczowe i zamknięcia) | tak – `fixtures.csv` (aktualizowany zwykle 2× w tygodniu) |
+| Ekstraklasa | tak – od sezonu 2012/13, tylko kursy zamknięcia 1X2 | `new_league_fixtures.csv` (aktualizowany rzadziej – mecze uzupełnia lista z The Odds API) |
+| Liga Mistrzów | nie | nie – terminarz z football-data.org, kursy z uzupełnień |
+
+Jak pilnujemy, żeby limit nigdy się nie wyczerpał:
+- wszystko trafia do SQLite, zakończone sezony pobierane są raz, odpowiedzi są w cache;
+- źródła z limitem pytamy **tylko o ligi z brakującymi kursami** w meczach z najbliższych 3 dni (ustawienie),
+  **najwyżej raz dziennie na ligę** – także po kliknięciu „Odśwież dane”;
+- budżet aplikacji jest niższy od limitu planu (domyślnie 400 z 500 kredytów The Odds API i 200 z 250
+  zapytań OddsPapi) i jest **rozłożony równo na dni** do końca miesiąca (np. 400 kredytów → maks. 13 dziennie);
+- rynki, których nie ma w żadnym źródle, liczone są jako **kurs szacunkowy** (podwójna szansa z 1X2, BTTS
+  i powyżej/poniżej z oczekiwanych goli dopasowanych do kursów 1X2) – wyraźnie oznaczony, bez zapytań;
 - limity odczytywane są z nagłówków odpowiedzi API (`[nagł.]` w statusie), a gdy ich brak – liczone lokalnie (`[lok.]`).
+
+Szacowane zużycie widać w *Ustawienia → Limity API i szacowane zużycie* oraz w `python -m typerbot status`.
+Dla 7 lig (top-5, Ekstraklasa, Liga Mistrzów) wychodzi zwykle **ok. 30–110 kredytów The Odds API** i
+**ok. 35–60 zapytań OddsPapi** miesięcznie – daleko od limitów planów.
 
 Każde źródło to osobny moduł (`typerbot/data/sources/`). Awaria jednego źródła jest zapisywana
 w jego statusie, a reszta synchronizacji działa dalej. Gdy źródło jest niedostępne, używane są
 dane z cache.
-
-### Znane ograniczenie planów darmowych
-
-Żadne darmowe API nie udostępnia hurtowo **sezonu 2025/26** (API-Football kończy się na 2024/25,
-football-data.org ma tylko sezon bieżący), a historię kursów da się pobrać z API tylko w małych
-porcjach. Dlatego domyślnie włączony jest import plików CSV z football-data.co.uk – uzupełnia
-lukę i daje historyczne kursy do backtestu. Wyłączenie: `python -m typerbot csv wylacz`.
-Niezależnie od tego aplikacja zapisuje kursy każdego obserwowanego meczu i z czasem buduje
-własną historię.
 
 ## Model prognoz
 
@@ -171,7 +178,6 @@ Korekta ρ poprawia prawdopodobieństwa wyników 0:0, 1:0, 0:1 i 1:1.
 
 - **Okno danych:** N ostatnich meczów każdej drużyny (domyślnie 20).
 - **Wygaszanie:** mecz sprzed „półokresu” (domyślnie 180 dni) waży o połowę mniej.
-- **xG:** gdy jest dostępne, cel dopasowania to mieszanka bramek i xG (domyślnie 50/50).
 - **Regularyzacja:** siła drużyn jest łagodnie ściągana do średniej ligi (domyślnie 10).
   Bez tego model „wierzy” w przypadkowe serie i jest zbyt pewny siebie – backtest to pokazał
   (przy słabej regularyzacji typy „70–80%” trafiały w ok. 54%).
@@ -192,7 +198,7 @@ Dla każdego typu (1X2, podwójna szansa, powyżej/poniżej 2,5, obie strzelą) 
 | Model | prawdopodobieństwo z modelu Dixona-Colesa |
 | Rynek | prawdopodobieństwo ze średnich kursów wielu bukmacherów po usunięciu marży |
 | **Prognoza** | `udział modelu × model + reszta × rynek` – tego używa ocena i generator |
-| Kurs | Superbet (OddsPapi); gdy brak – średnia rynkowa; „szacowany” = podwójna szansa wyliczona z 1X2 |
+| Kurs | Superbet (OddsPapi); gdy brak – średnia rynkowa; „szacunkowy” = wyliczony, bo nie ma go w żadnym źródle (podwójna szansa z 1X2, BTTS i powyżej/poniżej z oczekiwanych goli) – sprawdź u bukmachera |
 | Implikowane | prawdopodobieństwo z kursu Superbet po usunięciu jego marży |
 | EV | `prognoza × kurs − 1` (przed podatkiem); **value** (★), gdy EV > 0 |
 | EV po podatku | to samo z 12% podatkiem – dla gry pojedynczej |
@@ -258,7 +264,6 @@ listę problemów ze źródeł z ostatniej synchronizacji.
 |---|---|
 | Szara kropka źródła, „Brak klucza API” | wpisz klucz w Ustawieniach i kliknij Odśwież dane |
 | Czerwona kropka, „Nieprawidłowy klucz” | sprawdź klucz (bez spacji); dla The Odds API – czy nie wyczerpał się miesięczny limit |
-| „Niedostępne w planie darmowym” przy API-Football | normalne dla bieżącego sezonu – aplikacja korzysta wtedy z innych źródeł; zakres dostępnych sezonów zapamiętuje sama |
 | Pomarańczowa kropka, „Brak połączenia” | aplikacja pokazuje dane z cache; sprawdź internet i odśwież później |
 | Generator nie ułożył kuponu | pod komunikatem jest konkretny powód i podpowiedź; przycisk **Diagnostyka** pokazuje, ile meczów i kursów przyszło z każdego źródła i ile zostaje po każdym filtrze |
 | „⚠ problemy ze źródeł: N” na pasku stanu | kliknij napis – lista problemów z ostatniej synchronizacji (źródło, ligi, stan, co zrobić) |
@@ -283,10 +288,10 @@ typerbot/
 │   ├── quota.py                zużycie limitów i status źródeł
 │   ├── teams.py, team_seeds.py dopasowanie nazw drużyn między źródłami
 │   ├── repository.py           zapis meczów i kursów, łączenie meczów z kilku źródeł
-│   └── sources/                football_data_org, api_football, oddspapi, the_odds_api, football_data_csv
+│   └── sources/                football_data_csv (główne), football_data_org, the_odds_api, oddspapi
 ├── model/
 │   ├── dixon_coles.py          dopasowanie modelu (gradient analityczny, L-BFGS), macierz wyników
-│   ├── data.py                 okno ostatnich meczów, wagi czasowe, xG, „mało danych”, beniaminki
+│   ├── data.py                 okno ostatnich meczów, wagi czasowe, „mało danych”, beniaminki
 │   ├── predictor.py            prognozy meczów, siła lig (Liga Mistrzów)
 │   ├── markets.py              1X2, podwójna szansa, powyżej/poniżej, obie strzelą
 │   ├── backtest.py             walk-forward, metryki, kalibracja, symulacja finansowa

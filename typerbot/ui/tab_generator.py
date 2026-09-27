@@ -334,8 +334,6 @@ class GeneratorTab(QWidget):
         self.stake = QDoubleSpinBox()
         self.stake.setRange(0.5, 1_000_000)
         self.stake.setSuffix(" zł")
-        self.fetch_extra = QCheckBox("Najpierw dociągnij kursy BTTS i DC")
-        self.fetch_extra.setToolTip("Kursy BTTS i podwójnej szansy dla 10 najlepszych meczów (The Odds API, 2 kredyty na mecz)")
         self.generate_btn = QPushButton("Generuj kupony")
         self.generate_btn.setProperty("role", "primary")
         self.save_defaults_btn = QPushButton("Zapisz jako domyślne")
@@ -366,7 +364,6 @@ class GeneratorTab(QWidget):
         for cb in self.markets.values():
             blay.addWidget(cb)
         blay.addWidget(self.low_data)
-        blay.addWidget(self.fetch_extra)
         blay.addWidget(self.generate_btn)
         blay.addLayout(hbox(self.save_defaults_btn, self.diag_btn))
         blay.addWidget(self.status)
@@ -477,18 +474,10 @@ class GeneratorTab(QWidget):
         self.status.setText("Liczę prognozy i szukam najlepszych kombinacji…")
         self.ctx.hub.busy.emit("generator", True)
         service = self.service = CouponService(self.ctx.db, now=self.ctx.now)
-        fetch = self.fetch_extra.isChecked()
-        sync = self.ctx.sync
-
         secrets = self.ctx.secrets
 
         def work():
-            service.evaluate(cfg)
-            if fetch:
-                ids = service.top_candidate_matches(cfg, n=10)
-                sync.run(lambda rep: sync.sync_event_markets(rep, ids))
-                service.evaluate(cfg)
-            return service.run(cfg, evaluate=False, secrets=secrets)
+            return service.run(cfg, secrets=secrets)
 
         run_in_background(work, lambda res: self._generated(cfg, res), self._failed)
 

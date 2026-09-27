@@ -20,9 +20,9 @@ def world():
     return DemoWorld(NOW)
 
 
-def build(db, world, clock, *, missing_keys=(), fail=()):
+def build(db, world, clock, *, missing_keys=(), fail=(), **transport_kw):
     secrets = MemorySecretStore({s: f"key-{s}" for s in KEYED_SOURCES if s not in missing_keys})
-    sync, _ = make_service(db, secrets, world, clock, fail=set(fail))
+    sync, _ = make_service(db, secrets, world, clock, fail=set(fail), **transport_kw)
     report = sync.run_all()
     return sync, report, CouponService(db, now=lambda: NOW), secrets
 
@@ -30,39 +30,42 @@ def build(db, world, clock, *, missing_keys=(), fail=()):
 def test_no_fixtures_gives_concrete_reason_with_sources(db, world, clock):
     """Objaw z pytania: terminarz się nie pobrał -> brak meczów; powód wskazuje źródła i co zrobić."""
     sync, report, service, secrets = build(db, world, clock, missing_keys=("football_data_org",),
-                                           fail=("oddspapi", "the_odds_api"))
+                                           fail=("football_data_csv", "oddspapi", "the_odds_api"))
     result = service.run(demo_cfg(), secrets=secrets)
     diag = result.diagnosis
     assert result.coupons == [] and diag.stages[0].matches == 0
     reason = diag.reasons[0]
     assert "terminarz nie został pobrany" in reason
-    assert "football-data.org" in reason and "OddsPapi" in reason
+    assert "football-data.org" in reason and "football-data.co.uk" in reason
     assert any("wpisz klucz" in h for h in diag.hints)
     fd = next(s for s in diag.sources if s.source == "football_data_org")
     assert fd.state == "no_key"
     # lista problemów: ten sam problem w kilku ligach to jeden wpis
     problems = sync_problems(sync.last_report())
     assert problems == diag.problems
-    papi = [p for p in problems if p.source == "oddspapi" and p.step == "fixtures"]
-    assert len(papi) == 1 and set(papi[0].leagues) == {"PL", "EKS"}
+    events = [p for p in problems if p.source == "the_odds_api" and p.step == "fixtures"]
+    assert len(events) == 1 and set(events[0].leagues) == {"PL", "EKS"}
 
 
-def test_odds_source_fills_fixtures_when_fixture_sources_fail(db, world, clock):
-    """Naprawa: gdy terminarz nie spłynie, kursy (i mecze) bierzemy z The Odds API zamiast nie pytać wcale."""
-    sync, report, service, secrets = build(db, world, clock, missing_keys=("football_data_org",), fail=("oddspapi",))
-    assert any(s.source == "the_odds_api" and s.step == "odds" and s.state == "ok" for s in report.steps)
+def test_free_csv_fixtures_work_when_all_keyed_sources_fail(db, world, clock):
+    """Naprawa: nadchodzące mecze z kursami są w plikach football-data.co.uk (bez klucza) –
+    kupon powstaje nawet gdy football-data.org nie ma klucza, a The Odds API i OddsPapi nie działają."""
+    sync, report, service, secrets = build(db, world, clock, missing_keys=("football_data_org",),
+                                           fail=("oddspapi", "the_odds_api"))
     result = service.run(demo_cfg(), secrets=secrets)
     assert result.coupons, result.diagnosis.to_text()
-    odds_api = next(s for s in result.diagnosis.sources if s.source == "the_odds_api")
-    assert odds_api.matches > 0 and odds_api.with_odds > 0
+    csv = next(s for s in result.diagnosis.sources if s.source == "football_data_csv")
+    assert csv.matches > 0 and csv.with_odds > 0
 
 
 def test_missing_odds_reason_names_source(db, world, clock):
-    sync, report, service, secrets = build(db, world, clock, fail=("oddspapi", "the_odds_api"))
-    diag = service.run(demo_cfg(), secrets=secrets).diagnosis
+    # pliki z nadchodzącymi meczami puste (np. jeszcze nieopublikowane), terminarz z football-data.org,
+    # uzupełnienia kursów niedostępne
+    sync, report, service, secrets = build(db, world, clock, fail=("oddspapi", "the_odds_api"), fixtures_days=0)
+    diag = service.run(demo_cfg(leagues=["PL"]), secrets=secrets).diagnosis
     assert diag.stages[2].matches > 0                      # mecze i prognozy są
     assert diag.reasons and diag.reasons[0].startswith("Brak kursów dla")
-    assert "The Odds API" in diag.reasons[0]
+    assert "The Odds API" in diag.reasons[0] or "OddsPapi" in diag.reasons[0]
 
 
 @pytest.fixture

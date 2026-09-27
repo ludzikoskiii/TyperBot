@@ -19,7 +19,7 @@ NOW = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
 def env(db):
     LeagueRepository(db).ensure_defaults()
     repo = MatchRepository(db)
-    ids = [repo.save_records([MatchRecord("api_football", str(i), "PL", 2026, NOW - timedelta(days=1), f"Home {i}",
+    ids = [repo.save_records([MatchRecord("oddspapi", str(i), "PL", 2026, NOW - timedelta(days=1), f"Home {i}",
                                           f"Away {i}")])[0].match_id for i in range(4)]
     store = SettingsStore(db)
     settings = store.load()

@@ -68,14 +68,11 @@ class CouponSettings:
 
 @dataclass
 class SyncSettings:
-    fixtures_every_hours: float = 3.0
-    xg_daily_budget: int = 50             # ile ze 100 dziennych zapytań API-Football na xG
-    event_markets_daily_budget: int = 10  # max meczów dziennie z BTTS/DC z The Odds API
-    oddspapi_monthly_budget: int = 250    # łączny limit OddsPapi
-    oddspapi_scores_monthly: int = 60     # z tego: wyniki meczów (Ekstraklasa)
-    oddspapi_history_monthly: int = 40    # z tego: historia kursów do backtestu
-    csv_import: bool = True               # pliki CSV football-data.co.uk (sezon 2025/26, historyczne kursy)
-    csv_seasons: int = 7
+    fixtures_every_hours: float = 3.0     # odświeżanie terminarza i wyników (źródła bez limitu miesięcznego)
+    csv_seasons: int = 10                 # ile sezonów historii z football-data.co.uk (model i backtest)
+    odds_horizon_days: int = 3            # brakujące kursy uzupełniamy dla meczów z najbliższych X dni
+    odds_api_monthly_budget: int = 400    # ile z 500 kredytów The Odds API może zużyć aplikacja
+    oddspapi_monthly_budget: int = 200    # ile z 250 zapytań OddsPapi może zużyć aplikacja
 
 
 @dataclass

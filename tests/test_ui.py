@@ -47,7 +47,7 @@ def test_matches_tab_shows_predictions(window):
 
 def test_status_bar_reports_sources(window):
     text = window.sources_label.text()
-    for name in ("football-data.org", "API-Football", "OddsPapi", "The Odds API"):
+    for name in ("football-data.co.uk", "football-data.org", "OddsPapi", "The Odds API"):
         assert name in text
     assert "Zaktualizowano" in window.message_label.text()
 

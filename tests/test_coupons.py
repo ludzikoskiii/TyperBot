@@ -51,7 +51,7 @@ def test_evaluation_blend_reference_odds_implied_and_value():
     assert h.ev == pytest.approx(h.probability * 2.10 - 1)
     assert h.is_value == (h.probability * 2.10 > 1)
     assert h.ev_after_tax(s) == pytest.approx(h.probability * 2.10 * 0.88 - 1)
-    # Podwójna szansa: brak oferty -> kurs szacowany z 1X2 Superbet, prawdopodobieństwo rynku z 1X2
+    # Podwójna szansa: brak oferty -> kurs szacunkowy z 1X2 Superbet, prawdopodobieństwo rynku z 1X2
     dc = ev[("DC", "1X", 0.0)]
     assert dc.odds_source == "estimated" and dc.odds > 1.0
     assert dc.p_market == pytest.approx(ev[H].p_market + ev[D].p_market)
@@ -121,8 +121,6 @@ def world():
 def coupon_service(db, secrets, world, clock):
     sync, _ = make_service(db, secrets, world, clock)
     sync.run_all()
-    candidates = [r["id"] for r in sync.matches.matches_between(NOW, NOW + timedelta(days=4), statuses=["SCHEDULED"])]
-    sync.run(lambda rep: sync.sync_event_markets(rep, candidates[:4]))
     return CouponService(db, now=lambda: NOW)
 
 

@@ -1,11 +1,11 @@
-"""OddsPapi (API v4) – kursy Superbet i ponad 300 innych bukmacherów.
+"""OddsPapi (API v4) – uzupełnienie brakujących kursów: Superbet, BTTS i podwójna szansa.
 
-Plan darmowy: 250 zapytań miesięcznie (z historią kursów). Oszczędzamy je:
-  * kursy jednego bukmachera dla wielu lig naraz: /odds-by-tournaments,
-  * terminarz ligi jednym zapytaniem: /fixtures?tournamentId=…,
-  * wyniki (/scores) i historia kursów (/historical-odds) – pojedyncze mecze,
-    tylko w ramach budżetu ustawionego przez użytkownika.
-Identyfikatory rynków pobieramy z /markets (cache 30 dni), a 1X2 ma stałe ID 101.
+Plan darmowy (bez karty): 250 zapytań miesięcznie. Oszczędzamy je:
+  * kursy jednego bukmachera dla maks. 5 lig naraz: /odds-by-tournaments,
+  * terminarz ligi (/fixtures) tylko gdy kursy przyszły dla nieznanych meczów
+    (cache 3 dni),
+  * słowniki (/markets, /bookmakers, /tournaments) – cache 30 dni.
+Identyfikatory rynków pobieramy z /markets, a 1X2 ma stałe ID 101.
 Dokumentacja: https://oddspapi.io/en/docs
 """
 
@@ -126,34 +126,31 @@ class OddsPapi(ApiSource):
         data = self.request("/fixtures", params, ttl=ttl)
         return [r for r in (self.parse_fixture(f, league) for f in _as_list(data)) if r is not None]
 
-    def odds_by_tournaments(self, leagues: list[League], bookmaker: str, *, ttl: float) -> dict[str, list[OddsQuote]]:
-        """Kursy jednego bukmachera dla wielu lig: {fixtureId: [kursy]}."""
-        ids = [str(lg.oddspapi_id) for lg in leagues if lg.oddspapi_id]
+    def odds_by_tournaments(self, leagues: list[League], bookmaker: str, *, ttl: float
+                            ) -> tuple[dict[str, list[OddsQuote]], list[MatchRecord]]:
+        """Kursy jednego bukmachera dla wielu lig: ({fixtureId: [kursy]}, mecze z nazwami drużyn,
+        jeśli odpowiedź je zawiera – wtedy nie trzeba osobno pobierać terminarza)."""
+        by_id = {str(lg.oddspapi_id): lg for lg in leagues if lg.oddspapi_id}
+        ids = list(by_id)
         markets = self.market_map()
         out: dict[str, list[OddsQuote]] = {}
+        records: list[MatchRecord] = []
         for i in range(0, len(ids), MAX_TOURNAMENTS_PER_CALL):
             data = self.request("/odds-by-tournaments",
                                 {"bookmaker": bookmaker, "tournamentIds": ",".join(ids[i:i + MAX_TOURNAMENTS_PER_CALL])},
                                 ttl=ttl)
             for item in _as_list(data):
                 fid = item.get("fixtureId")
-                if fid:
-                    out[str(fid)] = parse_bookmaker_odds(item.get("bookmakerOdds") or {}, markets)
-        return out
-
-    def historical_odds(self, fixture_id: str, bookmakers: list[str]) -> list[OddsQuote]:
-        """Przebieg kursów meczu; zwracamy pierwszy (otwarcie) i ostatni (zamknięcie) kurs."""
-        data = self.request("/historical-odds", {"fixtureId": fixture_id, "bookmakers": ",".join(bookmakers[:3])},
-                            ttl=365 * DAY)
-        if isinstance(data, dict) and fixture_id in data and isinstance(data[fixture_id], dict):
-            data = data[fixture_id]
-        books = (data or {}).get("bookmakers") or data if isinstance(data, dict) else {}
-        return parse_historical(books if isinstance(books, dict) else {}, self.market_map())
-
-    def score(self, fixture_id: str) -> tuple[int, int] | None:
-        """Wynik po 90 minutach (suma 1. i 2. połowy, bez dogrywki)."""
-        data = self.request("/scores", {"fixtureId": fixture_id}, ttl=365 * DAY)
-        return parse_score(data)
+                if not fid:
+                    continue
+                out[str(fid)] = parse_bookmaker_odds(item.get("bookmakerOdds") or {}, markets)
+                league = by_id.get(str(item.get("tournamentId")))
+                if league is not None and item.get("participant1Name") and item.get("startTime"):
+                    rec = self.parse_fixture(item, league)
+                    if rec is not None:
+                        rec.odds = out[str(fid)]
+                        records.append(rec)
+        return out, records
 
     def parse_fixture(self, f: dict, league: League) -> MatchRecord | None:
         try:
@@ -242,55 +239,3 @@ def parse_bookmaker_odds(bookmaker_odds: dict, markets: dict[str, tuple[str, flo
                 if sel and price:
                     quotes.append(OddsQuote(bookmaker=slug, market=code, selection=sel, price=price, line=line))
     return quotes
-
-
-def parse_historical(books: dict, markets: dict[str, tuple[str, float, dict[str, str]]]) -> list[OddsQuote]:
-    """Historia: bookmaker -> markets -> outcomes -> players -> '0' -> [wpisy z createdAt]."""
-    quotes: list[OddsQuote] = []
-    for slug, book in books.items():
-        for mid, market in ((book or {}).get("markets") or {}).items():
-            spec = markets.get(str(mid))
-            if spec is None:
-                continue
-            code, line, outcomes = spec
-            for oid, outcome in ((market or {}).get("outcomes") or {}).items():
-                sel = outcomes.get(str(oid))
-                players = (outcome or {}).get("players") if isinstance(outcome, dict) else None
-                history = players.get("0") if isinstance(players, dict) else None
-                if not sel or not isinstance(history, list) or not history:
-                    continue
-                ordered = sorted((h for h in history if isinstance(h, dict) and h.get("price")),
-                                 key=lambda h: str(h.get("createdAt", "")))
-                if not ordered:
-                    continue
-                for kind, entry in (("pre", ordered[0]), ("close", ordered[-1])):
-                    try:
-                        price = float(entry["price"])
-                    except (TypeError, ValueError):
-                        continue
-                    if price > 1.0:
-                        quotes.append(OddsQuote(bookmaker=slug, market=code, selection=sel, price=price,
-                                                line=line, kind=kind))
-    return quotes
-
-
-def parse_score(data: Any) -> tuple[int, int] | None:
-    if isinstance(data, list):
-        data = data[0] if data else {}
-    scores = (data or {}).get("scores") if isinstance(data, dict) else None
-    if isinstance(scores, dict) and isinstance(scores.get("periods"), dict):
-        scores = scores["periods"]
-    if not isinstance(scores, dict):
-        return None
-
-    def pair(key: str) -> tuple[int, int] | None:
-        p = scores.get(key)
-        try:
-            return int(p["participant1Score"]), int(p["participant2Score"])
-        except (KeyError, TypeError, ValueError):
-            return None
-
-    first, second = pair("1"), pair("2")
-    if first and second:
-        return first[0] + second[0], first[1] + second[1]
-    return pair("0")

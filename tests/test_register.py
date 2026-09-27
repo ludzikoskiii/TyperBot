@@ -22,7 +22,7 @@ def setup(db):
                                                  ("Arsenal", "Chelsea", "PL"),
                                                  ("Everton", "Fulham", "PL"),
                                                  ("Raków Częstochowa", "Piast Gliwice", "EKS")]):
-        rec = MatchRecord("api_football", str(ext), league, 2026, KICK, home, away)
+        rec = MatchRecord("oddspapi", str(ext), league, 2026, KICK, home, away)
         ids[ext] = repo.save_records([rec])[0].match_id
     register = CouponRegister(db, now=lambda: NOW)
     return repo, register, ids
