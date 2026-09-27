@@ -20,26 +20,28 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 
 ## Uruchomienie na Windows
 
-1. Zainstaluj **Python 3.12** z [python.org](https://www.python.org/downloads/windows/).
-   W instalatorze zaznacz **„Add python.exe to PATH”**.
-2. Otwórz **PowerShell** w folderze projektu i wykonaj:
+1. Zainstaluj **Python 3.11 lub nowszy (64-bitowy)** z [python.org](https://www.python.org/downloads/windows/).
+   W instalatorze zaznacz **„Add python.exe to PATH”**. Najlepiej trzymaj folder projektu poza OneDrive
+   (np. `C:\TyperBot`) – biblioteki zajmują kilkaset MB i OneDrive próbowałby je synchronizować.
+2. Dwuklik na **`instaluj.bat`** (jednorazowo, kilka minut) – sam znajdzie Pythona, utworzy środowisko
+   `.venv` i zainstaluje biblioteki. To samo ręcznie w **PowerShell** w folderze projektu:
 
    ```powershell
-   py -3.12 -m venv .venv
+   python -m venv .venv
    .venv\Scripts\Activate.ps1
    pip install -r requirements-dev.txt
    ```
 
    Jeśli PowerShell zablokuje aktywację skryptu, wykonaj raz:
    `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
-3. Uruchom aplikację:
+3. Uruchom aplikację dwuklikiem na **`uruchom.bat`** (start bez okna konsoli) albo w PowerShell
+   po aktywacji środowiska:
 
    ```powershell
    python -m typerbot              # interfejs graficzny
    python -m typerbot gui --demo   # interfejs w trybie demo – bez kluczy i internetu (dane syntetyczne)
    ```
 
-   Później wystarczy dwuklik na **`uruchom.bat`** (start bez okna konsoli).
 4. Wpisz klucze API w zakładce **Ustawienia** (opis niżej) i kliknij **Odśwież dane**.
    **Pierwsza synchronizacja trwa kilka minut** – pobiera 7 sezonów historii (pliki CSV), sezony
    2022–2024 z API-Football i xG w ramach dziennego limitu. Postęp widać w pasku stanu na dole;
@@ -256,6 +258,8 @@ Wszystko, co robi interfejs, jest też dostępne jako polecenia (`python -m type
 | Pomarańczowa kropka, „Brak połączenia” | aplikacja pokazuje dane z cache; sprawdź internet i odśwież później |
 | Brak meczów lub kursów w generatorze | kliknij Odśwież dane; kursy są pobierane tylko dla lig z meczami w wybranym zakresie dat |
 | Ta sama drużyna pod dwiema nazwami | *Ustawienia → Dopasowanie nazw drużyn → Połącz z inną drużyną…* |
+| `No module named 'numpy'` (lub inny moduł) przy starcie | biblioteki nie są zainstalowane w użytym Pythonie – uruchom `instaluj.bat`, a potem `uruchom.bat` (albo aktywuj `.venv` przed `python -m typerbot`) |
+| `py -3.12`: „No suitable Python runtime found” | masz inną wersję Pythona – to nie przeszkadza; użyj `instaluj.bat` lub `python -m venv .venv` |
 | Coś działa nie tak | log błędów: `%LOCALAPPDATA%\TyperBot\typerbot.log` |
 
 Źródło OddsPapi (kursy Superbet) jest zaimplementowane według dokumentacji API; identyfikatory rynków
@@ -298,5 +302,5 @@ typerbot/
 └── cli.py                      polecenia wiersza poleceń
 packaging/                      konfiguracja PyInstaller (TyperBot.exe)
 tests/                          testy jednostkowe, integracyjne i interfejsu (pytest)
-uruchom.bat, zbuduj_exe.bat     skróty dla Windows
+*.bat                           instaluj / uruchom / zbuduj_exe – instalacja, start i budowa .exe
 ```

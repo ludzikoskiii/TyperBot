@@ -1,12 +1,14 @@
 @echo off
 rem Budowa TyperBot.exe (folder dist\TyperBot). Uruchom w folderze projektu.
-if not exist .venv (
-    py -3.12 -m venv .venv
+cd /d "%~dp0"
+call instaluj.bat bez-pauzy
+if errorlevel 1 (
+    pause
+    exit /b 1
 )
-call .venv\Scripts\activate.bat
-pip install -r requirements.txt pyinstaller
+.venv\Scripts\python.exe -m pip install --disable-pip-version-check pyinstaller
 cd packaging
-pyinstaller --noconfirm --distpath ..\dist --workpath ..\build typerbot.spec
+..\.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath ..\dist --workpath ..\build typerbot.spec
 cd ..
 echo.
 echo Test zbudowanej aplikacji:
