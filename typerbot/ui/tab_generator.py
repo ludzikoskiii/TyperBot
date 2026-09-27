@@ -14,11 +14,12 @@ from PySide6.QtWidgets import (
 
 from typerbot.config.settings import MARKETS, CouponSettings
 from typerbot.fmt import num, pct, plural, signed_pct
-from typerbot.services.coupons import Coupon, CouponService, SwapOption, kickoff_local
+from typerbot.services.coupons import Coupon, CouponService, GenerationResult, SwapOption, kickoff_local
 from typerbot.services.budget import BudgetService
 from typerbot.services.register import LegInput
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
+from typerbot.ui.diagnostics_view import DiagnosisDialog, reason_html
 from typerbot.ui.widgets import (
     KpiTile, NumItem, ProbabilityDelegate, fill_row_background, hbox, label, make_table, prob_item, profit_role,
     set_role, text_item,
@@ -338,6 +339,10 @@ class GeneratorTab(QWidget):
         self.generate_btn = QPushButton("Generuj kupony")
         self.generate_btn.setProperty("role", "primary")
         self.save_defaults_btn = QPushButton("Zapisz jako domyślne")
+        self.diag_btn = QPushButton("Diagnostyka")
+        self.diag_btn.setToolTip("Ile meczów i kursów przyszło z każdego źródła i ile zostaje po każdym filtrze")
+        self.diag_btn.setEnabled(False)
+        self.diagnosis = None
         self.status = label("", "muted", wrap=True)
 
         form = QFormLayout()
@@ -363,7 +368,7 @@ class GeneratorTab(QWidget):
         blay.addWidget(self.low_data)
         blay.addWidget(self.fetch_extra)
         blay.addWidget(self.generate_btn)
-        blay.addWidget(self.save_defaults_btn)
+        blay.addLayout(hbox(self.save_defaults_btn, self.diag_btn))
         blay.addWidget(self.status)
         blay.addStretch(1)
         left = QScrollArea()
@@ -395,6 +400,7 @@ class GeneratorTab(QWidget):
         self.range_mode.currentIndexChanged.connect(self._range_changed)
         self.generate_btn.clicked.connect(self.generate)
         self.save_defaults_btn.clicked.connect(self.save_defaults)
+        self.diag_btn.clicked.connect(self.show_diagnosis)
         ctx.hub.settings_changed.connect(self.load_settings)
         self.load_settings()
 
@@ -474,17 +480,17 @@ class GeneratorTab(QWidget):
         fetch = self.fetch_extra.isChecked()
         sync = self.ctx.sync
 
+        secrets = self.ctx.secrets
+
         def work():
             service.evaluate(cfg)
             if fetch:
                 ids = service.top_candidate_matches(cfg, n=10)
                 sync.run(lambda rep: sync.sync_event_markets(rep, ids))
                 service.evaluate(cfg)
-            coupons = service.generate(cfg, evaluate=False)
-            evaluated = service._evaluated
-            return coupons, len(evaluated), sum(any(e.odds for e in ev) for _, ev in evaluated.values())
+            return service.run(cfg, evaluate=False, secrets=secrets)
 
-        run_in_background(work, lambda res: self._generated(cfg, *res), self._failed)
+        run_in_background(work, lambda res: self._generated(cfg, res), self._failed)
 
     def _failed(self, message: str) -> None:
         self.busy = False
@@ -492,28 +498,36 @@ class GeneratorTab(QWidget):
         self.ctx.hub.busy.emit("generator", False)
         self.status.setText(f"Błąd: {message}")
 
-    def _generated(self, cfg: CouponSettings, coupons: list[Coupon], n_matches: int, n_with_odds: int) -> None:
+    def _generated(self, cfg: CouponSettings, result: GenerationResult) -> None:
         self.busy = False
         self.generate_btn.setEnabled(True)
         self.ctx.hub.busy.emit("generator", False)
         self.tabs.clear()
+        self.diagnosis = diag = result.diagnosis
+        self.diag_btn.setEnabled(True)
+        coupons = result.coupons
         if not coupons:
-            if not n_matches:
-                msg = "Brak nadchodzących meczów w wybranym zakresie i ligach. Odśwież dane (pasek na dole)."
-            elif not n_with_odds:
-                msg = f"Meczów w zakresie: {n_matches}, ale bez kursów. Odśwież dane, aby pobrać kursy."
-            else:
-                msg = ("Nie udało się ułożyć kuponu w zadanym zakresie. Zwiększ tolerancję lub liczbę zdarzeń, "
-                       "obniż minimalne prawdopodobieństwo albo poszerz zakres dat.")
-            self.placeholder.setText(msg)
+            set_role(self.placeholder, None)
+            self.placeholder.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            self.placeholder.setText(reason_html(diag) + "<p style='color:#8b93a7'>Szczegóły: przycisk "
+                                     "„Diagnostyka” – ile meczów i kursów przyszło z każdego źródła i ile zostaje "
+                                     "po każdym filtrze.</p>")
             self.tabs.addTab(self.placeholder, "Kupony")
-            self.status.setText(msg)
+            self.status.setText(diag.headline())
             return
         for letter, coupon in zip("ABC", coupons):
             card = CouponCard(self.ctx, self.service, cfg, coupon, letter)
             idx = self.tabs.addTab(card, f"Kupon {letter} · {num(coupon.odds)}")
             card.changed.connect(lambda i=idx, c=card: self.tabs.setTabText(i, f"Kupon {c.letter} · {num(c.coupon.odds)}"))
-        self.status.setText(f"Ułożono {plural(len(coupons), 'kupon', 'kupony', 'kuponów')} z {n_matches} meczów.")
+        n_matches = diag.stages[2].matches if len(diag.stages) > 2 else 0
+        msg = f"Ułożono {plural(len(coupons), 'kupon', 'kupony', 'kuponów')} z {plural(n_matches, 'meczu', 'meczów', 'meczów')}."
+        if diag.notes:
+            msg += " " + " ".join(diag.notes)
+        self.status.setText(msg)
+
+    def show_diagnosis(self) -> None:
+        if self.diagnosis is not None:
+            DiagnosisDialog(self.diagnosis, self).exec()
 
     def cards(self) -> list[CouponCard]:
         return [self.tabs.widget(i) for i in range(self.tabs.count()) if isinstance(self.tabs.widget(i), CouponCard)]

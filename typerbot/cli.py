@@ -13,6 +13,7 @@
   python -m typerbot strojenie [--zapisz] dobór parametrów modelu na historii
   python -m typerbot typy [--dni 3] [--value]   ocena typów (prognoza, kurs, EV, value)
   python -m typerbot kupon [--kurs 5] [--dni 3] [--tryb value] [--wymien A2 --na 3]
+  python -m typerbot diagnoza [--kurs 5] [--dni 3]   dlaczego nie ma kuponu (źródła, filtry, powód)
   python -m typerbot budzet [--limit 300] wydatki i bilans miesiąca, limit stawek
 """
 
@@ -81,6 +82,13 @@ def print_status(service: SyncService) -> None:
          f"(zakończone {counts['finished']}, nadchodzące {counts['upcoming']}), z xG: {counts['with_xg']}, "
          f"kursy: {counts['odds']}")
     _out(f"  nazwy drużyn do sprawdzenia: {counts['aliases_to_review']}")
+    from typerbot.services.diagnostics import sync_problems
+
+    problems = sync_problems(service.last_report())
+    if problems:
+        _out(f"\nProblemy ze źródeł przy ostatniej synchronizacji ({len(problems)}):")
+        for pr in problems:
+            _out(f"  • {pr.text()}" + (f" → {pr.hint}" if pr.hint else ""))
 
 
 def print_matches(service: SyncService, days: int) -> None:
@@ -378,7 +386,7 @@ def cmd_selections(args: argparse.Namespace) -> int:
 def cmd_coupon(args: argparse.Namespace) -> int:
     from typerbot.cli_coupons import run_coupon_command
 
-    sync = _real_service() if args.dociagnij else None
+    sync = _real_service() if args.dociagnij or getattr(args, "diagnoza", False) else None
     return run_coupon_command(sync.db if sync else Database(db_path()), args, sync_service=sync)
 
 
@@ -494,6 +502,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dociagnij-ile", type=int, default=10)
     p.add_argument("--krotko", action="store_true", help="bez uzasadnień")
     p.set_defaults(func=cmd_coupon)
+
+    p = sub.add_parser("diagnoza", help="dlaczego nie ma kuponu: źródła, kursy i mecze po każdym filtrze")
+    add_coupon_args(p)
+    p.set_defaults(func=cmd_coupon, diagnoza=True, dociagnij=False)
 
     p = sub.add_parser("strojenie", help="dobór parametrów modelu na historii (siatka + backtest)")
     p.add_argument("--ligi")

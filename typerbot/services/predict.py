@@ -8,7 +8,7 @@ Wyniki trafiają do tabeli `predictions` – z niej korzysta interfejs i generat
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from typerbot.config.settings import ModelSettings, SettingsStore
@@ -17,6 +17,9 @@ from typerbot.data.records import to_iso
 from typerbot.model.data import load_matches
 from typerbot.model.markets import Key
 from typerbot.model.predictor import FittedModel, Prediction
+
+
+_MODEL_CACHE: dict[tuple, FittedModel | None] = {}
 
 
 @dataclass
@@ -48,9 +51,21 @@ class PredictionService:
         self.model: FittedModel | None = None
 
     def fit(self, at: datetime | None = None, settings: ModelSettings | None = None) -> FittedModel | None:
+        """Dopasowanie modelu na danych do chwili `at`. Wynik jest zapamiętywany, dopóki nie zmienią się
+        dane, ustawienia ani (w przybliżeniu do 10 minut) chwila dopasowania – kolejne generowania są szybkie."""
         settings = settings or self.settings_store.load().model
+        at = at or self._now()
+        sig = self.db.query_one("SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM matches WHERE status = 'FINISHED'")
+        key = (self.db.path, int(at.timestamp() // 600), json.dumps(asdict(settings), sort_keys=True),
+               sig["n"] if sig else 0, sig["u"] if sig else None)
+        if key in _MODEL_CACHE:
+            self.model = _MODEL_CACHE[key]
+            return self.model
         table = load_matches(self.db)
-        self.model = FittedModel.fit(table, at or self._now(), settings) if len(table) else None
+        self.model = FittedModel.fit(table, at, settings) if len(table) else None
+        if len(_MODEL_CACHE) >= 4:
+            _MODEL_CACHE.pop(next(iter(_MODEL_CACHE)))
+        _MODEL_CACHE[key] = self.model
         return self.model
 
     def predict_between(self, start: datetime, end: datetime, *, save: bool = True) -> list[MatchPrediction]:

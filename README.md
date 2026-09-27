@@ -245,8 +245,12 @@ modelu w mieszance z rynkiem; `--zapisz` zapisuje wszystko w ustawieniach.
 ## Wiersz poleceń
 
 Wszystko, co robi interfejs, jest też dostępne jako polecenia (`python -m typerbot --help`):
-`sync`, `status`, `mecze`, `prognozy`, `typy`, `kupon`, `backtest`, `strojenie`, `budzet`, `klucz`,
+`sync`, `status`, `mecze`, `prognozy`, `typy`, `kupon`, `diagnoza`, `backtest`, `strojenie`, `budzet`, `klucz`,
 `csv`, `druzyny`, `demo`, `gui`.
+
+`python -m typerbot diagnoza` (te same parametry co `kupon`) pokazuje, ile meczów i kursów przyszło z każdego
+źródła, ile zostaje po każdym filtrze generatora i dlaczego kuponu nie da się ułożyć. `status` wypisuje też
+listę problemów ze źródeł z ostatniej synchronizacji.
 
 ## Rozwiązywanie problemów
 
@@ -256,7 +260,9 @@ Wszystko, co robi interfejs, jest też dostępne jako polecenia (`python -m type
 | Czerwona kropka, „Nieprawidłowy klucz” | sprawdź klucz (bez spacji); dla The Odds API – czy nie wyczerpał się miesięczny limit |
 | „Niedostępne w planie darmowym” przy API-Football | normalne dla bieżącego sezonu – aplikacja korzysta wtedy z innych źródeł; zakres dostępnych sezonów zapamiętuje sama |
 | Pomarańczowa kropka, „Brak połączenia” | aplikacja pokazuje dane z cache; sprawdź internet i odśwież później |
-| Brak meczów lub kursów w generatorze | kliknij Odśwież dane; kursy są pobierane tylko dla lig z meczami w wybranym zakresie dat |
+| Generator nie ułożył kuponu | pod komunikatem jest konkretny powód i podpowiedź; przycisk **Diagnostyka** pokazuje, ile meczów i kursów przyszło z każdego źródła i ile zostaje po każdym filtrze |
+| „⚠ problemy ze źródeł: N” na pasku stanu | kliknij napis – lista problemów z ostatniej synchronizacji (źródło, ligi, stan, co zrobić) |
+| Liczby przy źródłach na pasku stanu | to **zużycie** limitu, np. „zużyto 12/500 w tym mies.” (ile zapytań wykorzystano z limitu planu darmowego) |
 | Ta sama drużyna pod dwiema nazwami | *Ustawienia → Dopasowanie nazw drużyn → Połącz z inną drużyną…* |
 | `No module named 'numpy'` (lub inny moduł) przy starcie | biblioteki nie są zainstalowane w użytym Pythonie – uruchom `instaluj.bat`, a potem `uruchom.bat` (albo aktywuj `.venv` przed `python -m typerbot`) |
 | `py -3.12`: „No suitable Python runtime found” | masz inną wersję Pythona – to nie przeszkadza; użyj `instaluj.bat` lub `python -m venv .venv` |

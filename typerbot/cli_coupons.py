@@ -117,22 +117,19 @@ def run_coupon_command(db: Database, args: argparse.Namespace, sync_service=None
         _out(f"Dociągam kursy BTTS i podwójnej szansy dla {len(ids)} meczów (The Odds API)…")
         sync_service.run(lambda rep: sync_service.sync_event_markets(rep, ids))
         service.evaluate(cfg)
-    coupons = service.generate(cfg, evaluate=False)
+    secrets = getattr(sync_service, "secrets", None)
+    result = service.run(cfg, evaluate=False, secrets=secrets)
+    coupons = result.coupons
+    if getattr(args, "diagnoza", False):
+        _out(result.diagnosis.to_text())
+        return 0 if coupons else 1
     start, end = service.date_window(cfg)
     mode = "najwyższe prawdopodobieństwo" if cfg.mode == "probability" else "najwyższa wartość (EV)"
     _out(f"Generator kuponów – mecze {kickoff_local(start.strftime('%Y-%m-%dT%H:%M:%SZ'))} – "
          f"{kickoff_local(end.strftime('%Y-%m-%dT%H:%M:%SZ'))}, kurs {_pl(cfg.target_odds)} ±{cfg.tolerance:.0%}, "
          f"{cfg.min_events}–{cfg.max_events} zdarzeń, min. {cfg.min_probability:.0%} na typ, tryb: {mode}")
     if not coupons:
-        evaluated = service._evaluated
-        with_odds = sum(any(e.odds for e in evals) for _, evals in evaluated.values())
-        if not evaluated:
-            _out("\nBrak nadchodzących meczów w tym zakresie dat i ligach – uruchom: python -m typerbot sync")
-        elif not with_odds:
-            _out(f"\nMeczów w zakresie: {len(evaluated)}, ale żaden nie ma kursów – uruchom: python -m typerbot sync")
-        else:
-            _out(f"\nNie udało się ułożyć kuponu (mecze z kursami: {with_odds}). Spróbuj: większej tolerancji, "
-                 "niższego minimalnego prawdopodobieństwa, szerszego zakresu dat lub większej liczby zdarzeń.")
+        _out("\n" + result.diagnosis.to_text())
         return 1
     if getattr(args, "kurs_reczny", None):
         for item in args.kurs_reczny:

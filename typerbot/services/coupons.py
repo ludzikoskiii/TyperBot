@@ -10,18 +10,23 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from typerbot.betting.coupon import Candidate
 from typerbot.betting.evaluation import SelectionEval, evaluate_match
 from typerbot.betting.odds import payout
-from typerbot.betting.optimizer import alternatives
+from typerbot.betting.optimizer import alternatives, eligible
 from typerbot.betting.rationale import build_rationale
 from typerbot.config.settings import CouponSettings, Settings, SettingsStore
 from typerbot.data.db import Database
 from typerbot.data.repository import MatchRepository
+from typerbot.fmt import num, pct
 from typerbot.model.markets import Key
 from typerbot.services.predict import PredictionService
+
+if TYPE_CHECKING:
+    from typerbot.services.diagnostics import Diagnosis
 
 LOCAL = ZoneInfo("Europe/Warsaw")
 START_BUFFER = timedelta(minutes=5)   # mecze zaczynające się za chwilę pomijamy
@@ -109,6 +114,12 @@ class Coupon:
 
 
 @dataclass
+class GenerationResult:
+    coupons: list[Coupon]
+    diagnosis: "Diagnosis"
+
+
+@dataclass
 class SwapOption:
     leg: CouponLeg
     new_odds: float
@@ -124,6 +135,7 @@ class CouponService:
         self.matches = MatchRepository(db)
         self._evaluated: dict[int, tuple[MatchInfo, list[SelectionEval]]] = {}
         self._settings: Settings | None = None
+        self.window: tuple[datetime, datetime] | None = None
 
     # -- zakres i ocena -------------------------------------------------------------------
     def settings(self) -> Settings:
@@ -147,15 +159,20 @@ class CouponService:
             return max(now, local(date.fromisoformat(cfg.date_from))), local(date.fromisoformat(cfg.date_to), end=True)
         return now, now + timedelta(days=max(1, cfg.days_ahead))
 
+    def selected_leagues(self, cfg: CouponSettings) -> set[str]:
+        return set(cfg.leagues) if cfg.leagues else {
+            r["code"] for r in self.db.query("SELECT code FROM leagues WHERE enabled = 1")}
+
     def evaluate(self, cfg: CouponSettings | None = None) -> dict[int, tuple[MatchInfo, list[SelectionEval]]]:
         """Prognozy i ocena wszystkich typów w zakresie dat (wyniki w pamięci do wymiany typów)."""
         settings = self.settings()
         cfg = cfg or settings.coupon
         start, end = self.date_window(cfg)
-        leagues = set(cfg.leagues) if cfg.leagues else {
-            r["code"] for r in self.db.query("SELECT code FROM leagues WHERE enabled = 1")}
+        self.window = (start + START_BUFFER, end)
+        leagues = self.selected_leagues(cfg)
         markets = [m for m in cfg.markets if m in settings.markets_enabled]
-        self.predictions.fit(start, settings.model)
+        # Model zawsze na danych do „teraz” (późniejszych wyników i tak nie ma) – jeden model dla każdego zakresu.
+        self.predictions.fit(self._now(), settings.model)
         preds = self.predictions.predict_between(start + START_BUFFER, end)
         out: dict[int, tuple[MatchInfo, list[SelectionEval]]] = {}
         for mp in preds:
@@ -180,17 +197,36 @@ class CouponService:
         return out
 
     # -- kupony ---------------------------------------------------------------------------------
+    def candidate_stages(self, cfg: CouponSettings) -> list[tuple[str, list[Candidate]]]:
+        """Kolejne filtry generatora i typy, które po nich zostają (to samo widzi diagnostyka)."""
+        low = {mid for mid, (info, _) in self._evaluated.items() if info.low_data}
+        with_odds = [Candidate(info.match_id, sel.key, sel.probability, sel.odds, info.league,
+                               sel.odds_source == "estimated")
+                     for info, evals in self._evaluated.values() for sel in evals
+                     if sel.odds is not None and sel.key[0] in cfg.markets]
+        stages = [("Z kursami na wybranych rynkach", with_odds)]
+        likely = [c for c in with_odds if c.probability >= cfg.min_probability]
+        stages.append((f"Z typem o szansie co najmniej {pct(cfg.min_probability)}", likely))
+        if not cfg.include_low_data:
+            likely = [c for c in likely if c.match_id not in low]
+            stages.append(("Bez drużyn z małą liczbą danych", likely))
+        hi = cfg.target_odds * (1 + cfg.tolerance)
+        stages.append((f"Kurs typu mieści się w kursie docelowym (do {num(hi)})", eligible(likely, cfg)))
+        return stages
+
     def candidates(self, cfg: CouponSettings) -> list[Candidate]:
-        out = []
-        for info, evals in self._evaluated.values():
-            if info.low_data and not cfg.include_low_data:
-                continue
-            for sel in evals:
-                if sel.odds is None:
-                    continue
-                out.append(Candidate(info.match_id, sel.key, sel.probability, sel.odds, info.league,
-                                     sel.odds_source == "estimated"))
-        return out
+        return self.candidate_stages(cfg)[-1][1]
+
+    def run(self, cfg: CouponSettings | None = None, *, evaluate: bool = True, secrets=None) -> GenerationResult:
+        """Kupony wraz z diagnostyką: skąd są mecze, ile zostaje po filtrach i dlaczego nie ma kuponu."""
+        from typerbot.services.diagnostics import diagnose
+
+        settings = self.settings()
+        cfg = cfg or settings.coupon
+        if evaluate or not self._evaluated:
+            self.evaluate(cfg)
+        coupons = [self._build(c, cfg) for c in alternatives(self.candidates(cfg), cfg, cfg.alternatives)]
+        return GenerationResult(coupons, diagnose(self, cfg, coupons, secrets=secrets))
 
     def generate(self, cfg: CouponSettings | None = None, *, evaluate: bool = True) -> list[Coupon]:
         settings = self.settings()
@@ -278,4 +314,4 @@ def kickoff_local(iso: str) -> str:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(LOCAL).strftime("%d.%m %H:%M")
 
 
-__all__ = ["Coupon", "CouponLeg", "CouponService", "MatchInfo", "SwapOption", "kickoff_local"]
+__all__ = ["Coupon", "CouponLeg", "CouponService", "GenerationResult", "MatchInfo", "SwapOption", "kickoff_local"]

@@ -79,6 +79,30 @@ class SyncReport:
     def errors(self) -> list[StepResult]:
         return [s for s in self.steps if not s.ok]
 
+    def to_json(self) -> dict:
+        return {"started": self.started, "finished": self.finished,
+                "steps": [{"source": s.source, "step": s.step, "league": s.league, "state": s.state,
+                           "message": s.message, "records": s.records, "stale": s.stale} for s in self.steps]}
+
+    @classmethod
+    def from_json(cls, data: dict) -> "SyncReport":
+        report = cls(started=data.get("started") or 0.0, finished=data.get("finished"))
+        for d in data.get("steps") or []:
+            report.add(StepResult(d["source"], d["step"], d.get("league"), d["state"], d.get("message", ""),
+                                  d.get("records", 0), d.get("stale", False)))
+        return report
+
+
+def load_last_report(db: Database) -> SyncReport | None:
+    row = db.query_one("SELECT value FROM settings WHERE key = 'meta.last_sync'")
+    if row is None:
+        return None
+    try:
+        data = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return None
+    return SyncReport.from_json(data) if isinstance(data, dict) else None
+
 
 @dataclass
 class QuotaRow:
@@ -176,6 +200,10 @@ class SyncService:
 
     def _save(self, records: Iterable[MatchRecord]) -> int:
         return len(self.matches.save_records(list(records)))
+
+    def last_report(self) -> SyncReport | None:
+        """Raport ostatniej pełnej synchronizacji (lista problemów w interfejsie i diagnostyce)."""
+        return load_last_report(self.db)
 
     def _finish(self, report: SyncReport) -> SyncReport:
         report.finished = self.clock()
@@ -301,7 +329,11 @@ class SyncService:
         season = self.current_season()
         today = self.now().date()
         apif_current = season in self.apif_seasons()
-        for league in self.leagues.all(enabled_only=True):
+        enabled = self.leagues.all(enabled_only=True)
+        if not self.fd_org.has_key() and any(lg.fd_org_code for lg in enabled):
+            report.add(StepResult(self.fd_org.name, "fixtures", None, "no_key",
+                                  "brak klucza – terminarz tych lig tylko z innych źródeł"))
+        for league in enabled:
             if league.fd_org_code and self.fd_org.has_key():
                 self._step(report, self.fd_org, "fixtures", league,
                            lambda lg=league: self._save(self.fd_org.season_matches(lg, season, ttl=ttl)))
@@ -351,9 +383,19 @@ class SyncService:
         return saved
 
     # -- kursy ------------------------------------------------------------------------------
-    def leagues_needing_odds(self, start: datetime, end: datetime) -> list[League]:
+    def leagues_needing_odds(self, start: datetime, end: datetime,
+                             report: SyncReport | None = None) -> list[League]:
+        """Ligi z meczami w zakresie oraz ligi, których terminarz nie pobrał się w tej synchronizacji.
+
+        Źródło kursów zwraca też listę nadchodzących meczów, więc przy awarii źródła terminarza
+        nadal możemy poznać mecze i kursy (zamiast zostać bez niczego)."""
         with_matches = {r["league_code"] for r in self.matches.matches_between(start, end, statuses=["SCHEDULED"])}
-        return [lg for lg in self.leagues.all(enabled_only=True) if lg.code in with_matches]
+        leagues = self.leagues.all(enabled_only=True)
+        failed: set[str] = set()
+        if report is not None:
+            ok = {st.league for st in report.steps if st.step == "fixtures" and st.state == "ok"}
+            failed = {lg.code for lg in leagues if lg.code not in ok}
+        return [lg for lg in leagues if lg.code in with_matches | failed]
 
     def sync_odds(self, report: SyncReport, days_ahead: int | None = None,
                   leagues: list[League] | None = None) -> None:
@@ -361,7 +403,8 @@ class SyncService:
         settings = self.settings()
         ahead = days_ahead if days_ahead is not None else max(settings.coupon.days_ahead, 7)
         start = self.now()
-        targets = leagues if leagues is not None else self.leagues_needing_odds(start, start + timedelta(days=ahead))
+        targets = leagues if leagues is not None else self.leagues_needing_odds(
+            start, start + timedelta(days=ahead), report)
         active = self._active_odds_sports()
         for league in targets:
             if not league.odds_api_key:
@@ -519,7 +562,9 @@ class SyncService:
             if xg:
                 self.backfill_xg(report)
             self.http.purge(older_than_days=30)   # stare, przeterminowane odpowiedzi z cache
-            return self._finish(report)
+            self._finish(report)
+            self.set_meta("last_sync", report.to_json())
+            return report
 
     def run(self, fn: Callable[[SyncReport], None], *, force: bool = False) -> SyncReport:
         """Pojedynczy krok (np. tylko kursy) z tą samą obsługą błędów i statusów."""
