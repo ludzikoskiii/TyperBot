@@ -28,8 +28,9 @@ from scipy.optimize import minimize
 
 from typerbot.betting.odds import expected_value, remove_margin
 from typerbot.config.settings import Settings
+from typerbot.config.sports import football_like
 from typerbot.data.repository import OddsView, odds_view
-from typerbot.model.markets import Key, label
+from typerbot.model.markets import Key, label, sort_keys
 
 MARKET_GROUPS: dict[str, list[Key]] = {
     "1X2": [("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0)],
@@ -42,6 +43,8 @@ ODDS_SOURCE_LABELS = {"bookmaker": "", "average": "średnia", "best": "najlepszy
 ESTIMATED_NOTE = "kurs szacunkowy – sprawdź u bukmachera"
 BOOKMAKER_REFERENCES = ("pinnacle", "bet365")     # kolumny bukmacherów w plikach football-data.co.uk
 MARGIN_RANGE = (1.03, 1.10)      # marża kursu szacunkowego (jak w 1X2, w rozsądnych granicach)
+MIN_ESTIMATED_ODDS = 1.05        # niższego kursu szacunkowego nie podajemy – bukmacherzy rzadko go oferują,
+#                                  a oszacowanie skrajnych prawdopodobieństw jest najmniej pewne
 
 
 @dataclass
@@ -132,12 +135,18 @@ def derived_probabilities(lam_home: float, lam_away: float) -> dict[Key, float]:
     return {("OU", "O", 2.5): 1 - under, ("OU", "U", 2.5): under, ("BTTS", "Y", 0.0): btts, ("BTTS", "N", 0.0): 1 - btts}
 
 
+def _pairs(prices: dict[Key, float]) -> list[list[Key]]:
+    """Pary typów jednego rynku z tą samą linią: powyżej/poniżej, handicap gospodarzy/gości, zwycięzca."""
+    lines = sorted({(m, line) for m, _, line in prices if m in ("OU", "HCP", "ML")})
+    return [[(m, "O", line), (m, "U", line)] if m == "OU" else [(m, "H", line), (m, "A", line)] for m, line in lines]
+
+
 def fair_probabilities(prices: dict[Key, float], method: str) -> dict[Key, float]:
     """Prawdopodobieństwa bez marży dla wszystkich rynków, dla których są komplety kursów.
     Podwójną szansę liczymy z 1X2 (pewniejsze niż z kursów DC, które się nakładają)."""
     out: dict[Key, float] = {}
-    for market in ("1X2", "OU", "BTTS"):
-        out.update(_fair(prices, MARKET_GROUPS[market], method))
+    for keys in (MARKET_GROUPS["1X2"], MARKET_GROUPS["BTTS"], *_pairs(prices)):
+        out.update(_fair(prices, keys, method))
     dc = _dc_from_1x2(out)
     if dc:
         out.update(dc)
@@ -149,8 +158,8 @@ def fair_probabilities(prices: dict[Key, float], method: str) -> dict[Key, float
 
 
 def evaluate_match(match_id: int, model_probs: dict[Key, float], odds_rows: Iterable, settings: Settings,
-                   markets: Iterable[str] | None = None, manual_odds: dict[Key, float] | None = None
-                   ) -> list[SelectionEval]:
+                   markets: Iterable[str] | None = None, manual_odds: dict[Key, float] | None = None,
+                   sport: str = "football") -> list[SelectionEval]:
     """Ocena wszystkich typów meczu dla włączonych rynków."""
     ref_mode = settings.odds.reference
     book = ref_mode if ref_mode in BOOKMAKER_REFERENCES else ""
@@ -161,7 +170,7 @@ def evaluate_match(match_id: int, model_probs: dict[Key, float], odds_rows: Iter
     # Rynki bez żadnego kursu (np. BTTS, powyżej/poniżej w Ekstraklasie) – prawdopodobieństwo rynku
     # z oczekiwanych goli dopasowanych do kursów 1X2; kurs będzie oznaczony jako szacunkowy.
     derived: dict[Key, float] = {}
-    if any(k not in market_fair for grp in ("OU", "BTTS") for k in MARKET_GROUPS[grp]):
+    if football_like(sport) and any(k not in market_fair for grp in ("OU", "BTTS") for k in MARKET_GROUPS[grp]):
         rates = market_goal_rates(market_fair)
         if rates is not None:
             derived = {k: p for k, p in derived_probabilities(*rates).items() if k not in market_fair}
@@ -184,34 +193,31 @@ def evaluate_match(match_id: int, model_probs: dict[Key, float], odds_rows: Iter
         margin = min(max(sum(1 / p for p in ref_1x2.values()), MARGIN_RANGE[0]), MARGIN_RANGE[1])
         dc_fair = _dc_from_1x2(_fair(ref_1x2, MARKET_GROUPS["1X2"], method))
         for key, p in {**dc_fair, **derived}.items():
-            if key not in reference and p > 0:
-                reference[key] = (round(max(1.01, 1 / (p * margin)), 2), "estimated")
+            if key not in reference and p > 0 and 1 / (p * margin) >= MIN_ESTIMATED_ODDS:
+                reference[key] = (round(1 / (p * margin), 2), "estimated")
     # Mecz bez żadnych kursów – kurs szacunkowy z prognozy modelu z typową marżą bukmachera.
     if not reference:
         margin = 1.0 + min(max(settings.odds.estimated_margin, 0.0), 0.5)
         for key, p in model_probs.items():
-            if 0.0 < p < 1.0:
-                reference[key] = (round(max(1.01, 1 / (p * margin)), 2), "estimated")
+            if 0.0 < p < 1.0 and 1 / (p * margin) >= MIN_ESTIMATED_ODDS:
+                reference[key] = (round(1 / (p * margin), 2), "estimated")
     for key, price in (manual_odds or {}).items():
         reference[key] = (price, "manual")
 
     out: list[SelectionEval] = []
-    for market, keys in MARKET_GROUPS.items():
-        if market not in enabled:
+    for key in sort_keys(model_probs):
+        if key[0] not in enabled:
             continue
-        for key in keys:
-            if key not in model_probs:
-                continue
-            p_model = model_probs[key]
-            p_market = market_fair.get(key)
-            prob = p_model if p_market is None else w * p_model + (1 - w) * p_market
-            odds, source = reference.get(key, (None, ""))
-            implied = (book_fair.get(key) if source == "bookmaker" else None) or market_fair.get(key)
-            if source == "manual" and odds:
-                implied = 1 / odds   # kurs z jednego typu – bez marży nie da się usunąć
-            out.append(SelectionEval(
-                match_id=match_id, key=key, p_model=p_model, p_market=p_market, probability=prob,
-                odds=odds, odds_source=source, odds_average=view.average.get(key), implied=implied,
-                bookmaker=book if source == "bookmaker" else "",
-            ))
+        p_model = model_probs[key]
+        p_market = market_fair.get(key)
+        prob = p_model if p_market is None else w * p_model + (1 - w) * p_market
+        odds, source = reference.get(key, (None, ""))
+        implied = (book_fair.get(key) if source == "bookmaker" else None) or market_fair.get(key)
+        if source == "manual" and odds:
+            implied = 1 / odds   # kurs z jednego typu – bez marży nie da się usunąć
+        out.append(SelectionEval(
+            match_id=match_id, key=key, p_model=p_model, p_market=p_market, probability=prob,
+            odds=odds, odds_source=source, odds_average=view.average.get(key), implied=implied,
+            bookmaker=book if source == "bookmaker" else "",
+        ))
     return out

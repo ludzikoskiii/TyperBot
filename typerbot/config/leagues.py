@@ -6,7 +6,9 @@
   * openfootball (football.json, domena publiczna) – terminarz całego sezonu z wyprzedzeniem
     i wyniki; kod pliku, np. 'en.1';
   * OpenLigaDB – ligi niemieckie (terminarz i wyniki na bieżąco); skrót, np. 'bl3';
-  * international_results – mecze reprezentacji (liga 'INT').
+  * international_results – mecze reprezentacji (liga 'INT');
+  * inne dyscypliny: nflverse (NFL – terminarz i kursy), MLB Stats API (baseball), OpenLigaDB
+    (piłka ręczna, hokej i inne ligi dopisywane automatycznie, gdy są w serwisie).
 
 Katalog jest kopiowany do tabeli `leagues`; ligi, które pojawią się w danych, a nie ma ich
 w katalogu (np. nowa liga w pliku football-data.co.uk), są dopisywane automatycznie.
@@ -35,6 +37,8 @@ class League:
     timezone: str = "Europe/London"      # strefa godzin w terminarzu openfootball
     tier: int = 1                        # poziom rozgrywek w kraju (1 = najwyższy)
     national: bool = False               # reprezentacje (mecze często na neutralnym terenie)
+    sport: str = "football"              # dyscyplina (typerbot.config.sports)
+    feed: str | None = None              # źródło całej ligi spoza piłki nożnej: 'nflverse' | 'mlb'
 
     def season_at(self, when: datetime) -> int:
         """Sezon ligi dla daty: rok rozpoczęcia (split) albo rok kalendarzowy."""
@@ -114,6 +118,9 @@ DEFAULT_LEAGUES: list[League] = [
            timezone="America/Sao_Paulo", season_style="calendar"),
     League("CL", "Liga Mistrzów", "Europa", is_cup=True),
     League("INT", "Reprezentacje", "Świat", timezone="UTC", season_style="calendar", national=True),
+    # --- inne dyscypliny ---
+    League("NFL", "NFL", "USA", timezone="America/New_York", sport="american_football", feed="nflverse"),
+    League("MLB", "MLB", "USA", timezone="America/New_York", season_style="calendar", sport="baseball", feed="mlb"),
 ]
 DEFAULT_LEAGUES = [replace(lg, sort_order=i) for i, lg in enumerate(DEFAULT_LEAGUES, start=1)]
 

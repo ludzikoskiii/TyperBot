@@ -126,3 +126,25 @@ def test_secret_store_and_mask():
     assert "abcdef" not in mask(store.get("the_odds_api"))
     store.delete("the_odds_api")
     assert store.get("the_odds_api") is None
+
+
+def test_settings_v4_add_markets_of_other_sports(db):
+    old = json.loads(Settings().to_json())
+    old["version"] = 4
+    old["coupon"]["markets"] = ["1X2", "OU"]
+    old["markets_enabled"] = ["1X2", "DC", "OU", "BTTS"]
+    old["coupon"].pop("sports", None)
+    db.execute("INSERT INTO settings(key, value) VALUES('app', ?)", (json.dumps(old),))
+    s = SettingsStore(db).load()
+    assert s.coupon.markets == ["1X2", "ML", "HCP", "OU"]          # wybór użytkownika zostaje, nowe rynki dochodzą
+    assert s.markets_enabled == ["1X2", "DC", "ML", "HCP", "OU", "BTTS"]
+    assert s.coupon.sports == [] and s.sync.nflverse and s.sync.mlb and s.sync.openligadb_more
+
+
+def test_leagues_have_sports(db):
+    from typerbot.data.repository import LeagueRepository
+
+    leagues = LeagueRepository(db)
+    leagues.ensure_defaults()
+    assert leagues.get("NFL").sport == "american_football" and leagues.get("NFL").feed == "nflverse"
+    assert leagues.get("MLB").sport == "baseball" and leagues.get("PL").sport == "football"

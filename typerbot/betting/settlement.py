@@ -1,4 +1,5 @@
-"""Rozstrzyganie typów na podstawie wyniku po 90 minutach."""
+"""Rozstrzyganie typów na podstawie wyniku: w piłce nożnej po 90 minutach, w dyscyplinach
+bez remisów (zwycięzca, handicap, suma) – wyniku końcowego z dogrywką."""
 
 from __future__ import annotations
 
@@ -19,6 +20,15 @@ def settle(market: str, selection: str, line: float, home_goals: int, away_goals
         if total == line:
             return VOID
         return int((total > line) == (selection == "O"))
+    if market == "ML":
+        if diff == 0:
+            return VOID          # remis (np. w NFL po dogrywce) – zwrot stawki
+        return int((diff > 0) == (selection == "H"))
+    if market == "HCP":
+        value = diff + line     # linia z perspektywy gospodarzy
+        if value == 0:
+            return VOID
+        return int((value > 0) == (selection == "H"))
     if market == "BTTS":
         both = home_goals > 0 and away_goals > 0
         return int(both == (selection == "Y"))

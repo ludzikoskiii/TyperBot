@@ -8,6 +8,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from typerbot.config.settings import CouponSettings, ModelSettings
+from typerbot.config.sports import sport_label
+from typerbot.model.markets import label as sel_label, sort_keys
 from typerbot.model.backtest import BacktestResult
 from typerbot.services.predict import MatchPrediction
 
@@ -40,10 +42,13 @@ def print_model_settings(m: ModelSettings) -> None:
 
 
 def print_predictions(preds: list[MatchPrediction], summary: dict | None = None) -> None:
-    if summary:
+    if summary and "league_strength" in summary:
         strength = ", ".join(f"{k} {v:+.2f}" for k, v in summary["league_strength"].items())
         _out(f"Dopasowanie: {summary['matches']} meczów, {summary['teams']} drużyn, ρ = {summary['rho']:+.3f}"
              + (f", siła lig: {strength}" if len(summary["league_strength"]) > 1 else ""))
+    for key, value in (summary or {}).items():
+        if key.startswith("sport:"):
+            _out(f"Model wyników – {sport_label(key[6:])}: {value['matches']} meczów, {value['teams']} drużyn")
     _out(f"\nPrognozy ({len(preds)} meczów)")
     _out(f"  {'Data':<12}{'Liga':<5}{'Mecz':<40}{'xG':>10}{'1':>7}{'X':>7}{'2':>7}{'1X':>7}{'X2':>7}"
          f"{'>2.5':>7}{'BTTS':>7}  Uwagi")
@@ -57,6 +62,12 @@ def print_predictions(preds: list[MatchPrediction], summary: dict | None = None)
         if p.prediction.cross_league:
             flags.append("różne ligi – niższa pewność")
         match = f"{p.home} – {p.away}"
+        if ("1X2", "H", 0.0) not in pr or ("BTTS", "Y", 0.0) not in pr:     # inne dyscypliny
+            picks = ", ".join(f"{sel_label(k)} {_pct(pr[k], 0)}" for k in sort_keys(pr) if k[0] in ("1X2", "ML"))
+            score = f"{p.prediction.lam_home:.1f}:{p.prediction.lam_away:.1f}"
+            _out(f"  {when:<12}{p.league:<5}{match[:39]:<40}{score:>10}  {picks}"
+                 + ("  " + "; ".join(flags) if flags else ""))
+            continue
         cols = [pr[("1X2", "H", 0.0)], pr[("1X2", "D", 0.0)], pr[("1X2", "A", 0.0)], pr[("DC", "1X", 0.0)],
                 pr[("DC", "X2", 0.0)], pr[("OU", "O", 2.5)], pr[("BTTS", "Y", 0.0)]]
         xg = f"{p.prediction.lam_home:.2f}:{p.prediction.lam_away:.2f}"

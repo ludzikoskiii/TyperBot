@@ -11,21 +11,31 @@ from PySide6.QtWidgets import (
 from typerbot.config.settings import MARKETS, Settings
 from typerbot.data.errors import STATE_LABELS
 from typerbot.data.sources import SOURCE_LABELS
+from typerbot.model.markets import MARKET_HINTS, MARKET_NAMES
 from typerbot.services.diagnostics import when_label
 from typerbot.ui import theme
 from typerbot.ui.context import AppContext
 from typerbot.ui.league_tree import LeagueTree
 from typerbot.ui.widgets import NumItem, hbox, label, make_table, text_item
 
-MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "OU": "Powyżej/poniżej 2,5", "BTTS": "Obie strzelą"}
 SOURCE_LINKS = {
     "football_data_csv": "https://www.football-data.co.uk",
     "openfootball": "https://github.com/openfootball/football.json",
     "openligadb": "https://www.openligadb.de",
     "international": "https://github.com/martj42/international_results",
     "club_names": "https://github.com/openfootball/clubs",
+    "nflverse": "https://github.com/nflverse/nfldata",
+    "mlb": "https://statsapi.mlb.com",
 }
-OPTIONAL_SOURCES = {"openfootball": "openfootball", "openligadb": "openligadb", "international": "international"}
+# Ustawienie → opis pola wyboru (źródła, które można wyłączyć).
+OPTIONAL_SOURCES = {
+    "openfootball": f"Używaj: {SOURCE_LABELS['openfootball']}",
+    "openligadb": f"Używaj: {SOURCE_LABELS['openligadb']}",
+    "openligadb_more": "Więcej lig i dyscyplin z OpenLigaDB (piłka ręczna, hokej, piłka nożna kobiet, niższe ligi)",
+    "international": f"Używaj: {SOURCE_LABELS['international']}",
+    "nflverse": f"Futbol amerykański – {SOURCE_LABELS['nflverse']}",
+    "mlb": f"Baseball – {SOURCE_LABELS['mlb']}",
+}
 
 
 def _dspin(lo, hi, dec=2, step=0.1, suffix=""):
@@ -56,13 +66,15 @@ class SettingsTab(QWidget):
         self.leagues = LeagueTree(counts_label="Nadchodzące")
         self.leagues.setMinimumHeight(360)
         ll = QVBoxLayout(leagues_box)
-        ll.addWidget(label("Lista pochodzi z danych: 38 lig z football-data.co.uk oraz ligi z openfootball i "
-                           "OpenLigaDB; nowe ligi z plików dopisują się same. Zaznacz kraj, aby wybrać wszystkie "
-                           "jego ligi.", "muted", wrap=True))
+        ll.addWidget(label("Lista pochodzi z danych: 38 lig z football-data.co.uk, ligi z openfootball i "
+                           "OpenLigaDB oraz inne dyscypliny (NFL, MLB, piłka ręczna, hokej); nowe ligi dopisują się "
+                           "same. Zaznacz kraj, aby wybrać wszystkie jego ligi.", "muted", wrap=True))
         ll.addWidget(self.leagues)
 
         markets_box = QGroupBox("Rynki")
         self.market_checks = {m: QCheckBox(MARKET_NAMES[m]) for m in MARKETS}
+        for m, cb in self.market_checks.items():
+            cb.setToolTip(MARKET_HINTS[m])
         ml = QVBoxLayout(markets_box)
         for cb in self.market_checks.values():
             ml.addWidget(cb)
@@ -98,8 +110,7 @@ class SettingsTab(QWidget):
         self.sources_table = make_table(["Źródło", "Co daje", "Stan", "Dane z", "Zapytań dziś"], stretch=1,
                                         sortable=False)
         self.sources_table.setMinimumHeight(190)
-        self.source_checks = {key: QCheckBox(f"Używaj: {SOURCE_LABELS[name]}")
-                              for key, name in OPTIONAL_SOURCES.items()}
+        self.source_checks = {key: QCheckBox(text) for key, text in OPTIONAL_SOURCES.items()}
         sl = QVBoxLayout(sources_box)
         sl.addWidget(self.sources_table)
         for cb in self.source_checks.values():
@@ -159,8 +170,9 @@ class SettingsTab(QWidget):
         mf.addRow("", self.dixon_coles)
         mf.addRow(label("Model = Dixon-Coles połączony z rankingiem Elo (z samych wyników – działa też dla lig "
                         "bez szczegółowych statystyk i dla reprezentacji). Resztę prognozy stanowi rynek (kursy bez "
-                        "marży), gdy są kursy. Najlepsze wartości dobierzesz poniżej: „Strojenie parametrów”.",
-                        "muted", wrap=True))
+                        "marży), gdy są kursy. Najlepsze wartości dobierzesz poniżej: „Strojenie parametrów”. "
+                        "Te ustawienia dotyczą piłki nożnej; inne dyscypliny mają model wyników z parametrami "
+                        "dobranymi backtestem (README, „Inne dyscypliny”).", "muted", wrap=True))
 
         self.save_btn = QPushButton("Zapisz ustawienia")
         self.save_btn.setProperty("role", "primary")

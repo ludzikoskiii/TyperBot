@@ -1,7 +1,8 @@
 """Generator kuponów: ocena typów nadchodzących meczów i dobór kombinacji.
 
 Przepływ: prognozy modelu → ocena typów (mieszanka z rynkiem, kurs referencyjny,
-EV) → kandydaci spełniający filtry → optymalizator (3 alternatywy) → uzasadnienia.
+EV) → kandydaci spełniający filtry → optymalizator (kilka kuponów) → uzasadnienia.
+Kupon może łączyć dyscypliny (np. piłkę nożną z NFL) – wybór dyscyplin w ustawieniach kuponu.
 Kupon można modyfikować ręcznie – każda wymiana przelicza kurs, szansę i EV.
 """
 
@@ -19,6 +20,7 @@ from typerbot.betting.odds import odds_after_tax
 from typerbot.betting.optimizer import agrees, alternatives, eligible
 from typerbot.betting.rationale import build_rationale, one_liner
 from typerbot.config.settings import CouponSettings, Settings, SettingsStore
+from typerbot.config.sports import FOOTBALL
 from typerbot.data.db import Database
 from typerbot.data.repository import MatchRepository
 from typerbot.fmt import num, pct, plural
@@ -47,10 +49,11 @@ class MatchInfo:
     lam_away: float
     low_data: bool
     flags: list[str] = field(default_factory=list)
+    sport: str = FOOTBALL
 
     def as_dict(self) -> dict:
         return {"home_id": self.home_id, "away_id": self.away_id, "home": self.home, "away": self.away,
-                "kickoff": self.kickoff}
+                "kickoff": self.kickoff, "sport": self.sport}
 
 
 @dataclass
@@ -164,9 +167,17 @@ class CouponService:
             return max(now, local(date.fromisoformat(cfg.date_from))), local(date.fromisoformat(cfg.date_to), end=True)
         return now, now + timedelta(days=max(1, cfg.days_ahead))
 
+    def league_sports(self) -> dict[str, str]:
+        return {r["code"]: r["sport"] for r in self.db.query("SELECT code, sport FROM leagues")}
+
     def selected_leagues(self, cfg: CouponSettings) -> set[str]:
-        return set(cfg.leagues) if cfg.leagues else {
+        """Ligi wybrane w ustawieniach kuponu (puste = wszystkie aktywne) z wybranych dyscyplin."""
+        codes = set(cfg.leagues) if cfg.leagues else {
             r["code"] for r in self.db.query("SELECT code FROM leagues WHERE enabled = 1")}
+        if cfg.sports:
+            sports = self.league_sports()
+            codes = {c for c in codes if sports.get(c, FOOTBALL) in cfg.sports}
+        return codes
 
     def evaluate(self, cfg: CouponSettings | None = None) -> dict[int, tuple[MatchInfo, list[SelectionEval]]]:
         """Prognozy i ocena wszystkich typów w zakresie dat (wyniki w pamięci do wymiany typów)."""
@@ -179,6 +190,7 @@ class CouponService:
         # Model zawsze na danych do „teraz” (późniejszych wyników i tak nie ma) – jeden model dla każdego zakresu.
         self.predictions.fit(self._now(), settings.model)
         preds = self.predictions.predict_between(start + START_BUFFER, end)
+        sports = self.league_sports()
         out: dict[int, tuple[MatchInfo, list[SelectionEval]]] = {}
         for mp in preds:
             if mp.league not in leagues:
@@ -196,9 +208,11 @@ class CouponService:
                 flags.append("drużyny z różnych lig – niższa pewność")
             if pr.method == "Elo":
                 flags.append("prognoza z rankingu Elo (tylko wyniki meczów)")
+            sport = sports.get(mp.league, FOOTBALL)
             info = MatchInfo(mp.match_id, mp.league, mp.kickoff, row["home_team_id"], row["away_team_id"],
-                             mp.home, mp.away, pr.lam_home, pr.lam_away, pr.low_data, flags)
-            evals = evaluate_match(mp.match_id, pr.probs, self.matches.odds_for_match(mp.match_id), settings, markets)
+                             mp.home, mp.away, pr.lam_home, pr.lam_away, pr.low_data, flags, sport)
+            evals = evaluate_match(mp.match_id, pr.probs, self.matches.odds_for_match(mp.match_id), settings, markets,
+                                   sport=sport)
             out[mp.match_id] = (info, evals)
         self._evaluated = out
         return out

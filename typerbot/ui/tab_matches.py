@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from typerbot.betting.rationale import match_summary
+from typerbot.config.sports import football_like, sport_label, sport_of
 from typerbot.fmt import num, pct, signed_pct
 from typerbot.services.coupons import CouponService, kickoff_local
 from typerbot.ui import theme
@@ -23,8 +24,20 @@ from typerbot.ui.workers import run_in_background
 RANGES = [("Dziś", "today", 1), ("Jutro", "tomorrow", 1), ("Najbliższe 3 dni", "days", 3),
           ("Najbliższe 7 dni", "days", 7)]
 MARKET_FILTER = [("Wszystkie rynki", None), ("1X2", "1X2"), ("Podwójna szansa", "DC"),
-                 ("Powyżej/poniżej", "OU"), ("Obie strzelą", "BTTS")]
-MATCH_COLUMNS = ["Data", "Liga", "Mecz", "Oczek. gole", "1", "X", "2", ">2,5", "BTTS", "Value", "Uwagi"]
+                 ("Zwycięzca (z dogrywką)", "ML"), ("Handicap", "HCP"), ("Powyżej/poniżej", "OU"),
+                 ("Obie strzelą", "BTTS")]
+MATCH_COLUMNS = ["Data", "Liga", "Mecz", "Oczek. wynik", "1", "X", "2", "Powyżej", "BTTS", "Value", "Uwagi"]
+
+
+def overview_keys(info, evals) -> list:
+    """Typy w kolumnach tabeli: 1, X, 2, powyżej (piłka nożna: 2,5; inne dyscypliny: linia bliska 50%), BTTS."""
+    if football_like(info.sport):
+        return [("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0), ("OU", "O", 2.5), ("BTTS", "Y", 0.0)]
+    market = "1X2" if sport_of(info.sport).draws else "ML"
+    overs = [e for e in evals if e.key[0] == "OU" and e.key[1] == "O"]
+    over = min(overs, key=lambda e: abs(e.p_model - 0.5)).key if overs else None
+    draw = ("1X2", "D", 0.0) if market == "1X2" else None
+    return [(market, "H", 0.0), draw, (market, "A", 0.0), over, None]
 SEL_COLUMNS = ["Typ", "Prognoza", "Model", "Rynek", "Kurs", "Źródło", "Implik.", "EV", "EV po podatku"]
 
 
@@ -156,13 +169,17 @@ class MatchesTab(QWidget):
             when.setData(Qt.UserRole, info.kickoff)
             when.setData(Qt.UserRole + 10, info.match_id)
             t.setItem(r, 0, when)
-            t.setItem(r, 1, text_item(info.league))
+            league = text_item(info.league)
+            league.setToolTip(sport_label(info.sport))
+            t.setItem(r, 1, league)
             t.setItem(r, 2, text_item(f"{info.home} – {info.away}", bold=True))
             t.setItem(r, 3, NumItem(f"{num(info.lam_home, 1)} : {num(info.lam_away, 1)}", info.lam_home + info.lam_away))
-            for c, key in enumerate([("1X2", "H", 0.0), ("1X2", "D", 0.0), ("1X2", "A", 0.0), ("OU", "O", 2.5),
-                                     ("BTTS", "Y", 0.0)], start=4):
-                e = by_key.get(key)
-                t.setItem(r, c, prob_item(e.probability if e else None, bool(e and e.is_value)))
+            for c, key in enumerate(overview_keys(info, evals), start=4):
+                e = by_key.get(key) if key else None
+                item = prob_item(e.probability if e else None, bool(e and e.is_value))
+                if e is not None and key[0] == "OU" and key[2] != 2.5:
+                    item.setToolTip(e.label)
+                t.setItem(r, c, item)
             t.setItem(r, 9, NumItem(f"★ {n_value}" if n_value else "", n_value, Qt.AlignCenter))
             if n_value:
                 t.item(r, 9).setForeground(QBrush(QColor(theme.POSITIVE)))

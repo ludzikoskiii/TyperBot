@@ -175,3 +175,24 @@ def test_merge_teams_dedupes_matches(db):
     assert r.merge_teams(legia, wrong) == 1
     assert db.query_one("SELECT COUNT(*) FROM matches")[0] == 1
     assert r.source_id(a, "openligadb")[0] == "2"
+
+
+def test_same_name_in_other_sport_is_different_team(db):
+    """Te same nazwy w różnych dyscyplinach (piłka nożna mężczyzn i kobiet, piłka ręczna) to różne drużyny."""
+    from typerbot.config.leagues import League
+
+    leagues = LeagueRepository(db)
+    leagues.ensure_defaults()
+    leagues.add_discovered(League("OL-FBL", "Frauen-Bundesliga", "Niemcy", openligadb="fbl", sport="football_women"))
+    leagues.add_discovered(League("OL-HBL", "HBL", "Niemcy", openligadb="hbl", sport="handball"))
+    leagues.add_discovered(League("OL-DHB", "DHB-Pokal", "Niemcy", is_cup=True, openligadb="dhb", sport="handball"))
+    m = TeamMatcher(db)
+    men = resolve(db, m, "openligadb", "BL1", "Eintracht Frankfurt")
+    women = resolve(db, m, "openligadb", "OL-FBL", "Eintracht Frankfurt", sport="football_women")
+    assert women.team_id != men.team_id and women.created
+    football = resolve(db, m, "openligadb", "BL3", "1. FC Magdeburg")
+    handball = resolve(db, m, "openligadb", "OL-HBL", "SC Magdeburg", sport="handball")
+    cup = resolve(db, m, "openligadb", "OL-DHB", "SC Magdeburg", is_cup=True, sport="handball")
+    assert cup.team_id == handball.team_id != football.team_id
+    other = resolve(db, m, "openligadb", "OL-DHB", "Magdeburg", is_cup=True, sport="handball")
+    assert other.team_id != football.team_id           # puchar piłki ręcznej nie szuka wśród drużyn piłkarskich

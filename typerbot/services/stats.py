@@ -19,7 +19,8 @@ from typerbot.data.records import parse_iso
 from typerbot.services.register import LOST, PENDING, VOID, WON, CouponRegister, StoredCoupon, units_returned
 
 LOCAL = ZoneInfo("Europe/Warsaw")
-MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "OU": "Powyżej/poniżej", "BTTS": "Obie strzelą"}
+MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "ML": "Zwycięzca (z dogrywką)", "HCP": "Handicap",
+                "OU": "Powyżej/poniżej", "BTTS": "Obie strzelą"}
 
 
 def local_month(iso: str) -> str:

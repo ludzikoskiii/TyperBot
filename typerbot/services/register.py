@@ -6,7 +6,8 @@ od stawki (12%, chyba że bukmacher go pokrywa). Podatku od wygranej nie uwzglę
 zależy od kwoty, a aplikacja kwot nie zna.
 
 Zasady rozliczania (jak u polskich bukmacherów):
-  * zdarzenie rozstrzygane wynikiem po 90 minutach,
+  * zdarzenie rozstrzygane wynikiem po 90 minutach (piłka nożna); w dyscyplinach bez remisów
+    (NFL, baseball, hokej) zwycięzca, handicap i suma – wynikiem końcowym z dogrywką,
   * mecz odwołany, przyznany walkowerem albo przełożony o ponad 48 h – zwrot
     (zdarzenie liczy się po kursie 1,00),
   * kupon jest nietrafiony, gdy przegra choć jedno zdarzenie; trafiony, gdy wszystkie

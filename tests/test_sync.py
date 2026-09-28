@@ -11,7 +11,7 @@ from typerbot.data.records import FINISHED, SCHEDULED, MatchRecord
 from typerbot.demo.transport import DemoTransport
 from typerbot.demo.world import LEAGUES, DemoWorld
 
-ALL_SOURCES = {"football_data_csv", "openfootball", "openligadb", "international", "club_names"}
+ALL_SOURCES = {"football_data_csv", "openfootball", "openligadb", "international", "club_names", "nflverse", "mlb"}
 
 
 @pytest.fixture(scope="module")
@@ -99,7 +99,10 @@ def test_second_sync_uses_cache_and_history_once(db, secrets, world, clock):
     clock.advance(4 * 3600)
     service.run_all()
     new = transport.calls[first:]
-    assert new and all("fixtures" in c or "/getmatchdata/" in c for c in new), new
+    # terminarz: pliki fixtures, OpenLigaDB, plik NFL (terminarz i wyniki w jednym), MLB – najbliższe dni
+    # (historia sezonu MLB – od lutego – już pobrana)
+    assert new and all("fixtures" in c or "/getmatchdata/" in c or c.endswith("/games.csv")
+                       or (c.startswith("mlb:") and "-02-15" not in c) for c in new), new
 
 
 def test_disabled_optional_source_is_not_called(db, secrets, world, clock):

@@ -2,6 +2,8 @@
 
 Lista jest budowana z danych: pokazujemy ligi, dla których są mecze w bazie (liczba nadchodzących
 meczów obok nazwy). Przed pierwszym pobraniem danych – wszystkie ligi z katalogu.
+Ligi innych dyscyplin są w osobnych grupach („USA · futbol amerykański”); filtr dyscyplin ukrywa
+ligi niewybranych dyscyplin (ich zaznaczenie zostaje).
 """
 
 from __future__ import annotations
@@ -11,10 +13,19 @@ from collections.abc import Iterable
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHeaderView, QLineEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
+from typerbot.config.sports import SPORT_ORDER, sport_label
 from typerbot.data.repository import LeagueCounts
 from typerbot.data.teams import normalize
 
 CODE_ROLE = Qt.UserRole
+SPORT_ROLE = Qt.UserRole + 1
+
+
+def group_name(league) -> str:
+    """Grupa w drzewie: kraj (piłka nożna) albo kraj i dyscyplina."""
+    if league.sport == "football":
+        return league.country
+    return f"{league.country} · {sport_label(league.sport).lower()}"
 
 
 class LeagueTree(QWidget):
@@ -39,6 +50,7 @@ class LeagueTree(QWidget):
         lay.addWidget(self.search)
         lay.addWidget(self.tree, 1)
         self._leagues: dict[str, QTreeWidgetItem] = {}
+        self._sports: set[str] | None = None      # filtr dyscyplin (None – wszystkie)
         self._updating = False
         self.search.textChanged.connect(self._filter)
         self.tree.itemChanged.connect(self._item_changed)
@@ -55,23 +67,26 @@ class LeagueTree(QWidget):
         self.tree.clear()
         self._leagues.clear()
         countries: dict[str, QTreeWidgetItem] = {}
-        for r in sorted(shown, key=lambda x: (x.league.country != "Polska", x.league.country, x.league.tier,
-                                              x.league.name)):
+        order = {s: i for i, s in enumerate(SPORT_ORDER)}
+        for r in sorted(shown, key=lambda x: (order.get(x.league.sport, 99), x.league.country != "Polska",
+                                              x.league.country, x.league.tier, x.league.name)):
             lg = r.league
-            parent = countries.get(lg.country)
+            group = group_name(lg)
+            parent = countries.get(group)
             if parent is None:
-                parent = QTreeWidgetItem([lg.country, ""])
+                parent = QTreeWidgetItem([group, ""])
                 parent.setFlags(parent.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
                 parent.setCheckState(0, Qt.Unchecked)
-                countries[lg.country] = parent
+                countries[group] = parent
                 self.tree.addTopLevelItem(parent)
             item = QTreeWidgetItem([lg.name, str(r.upcoming) if r.upcoming else "–"])
             item.setData(0, CODE_ROLE, lg.code)
+            item.setData(0, SPORT_ROLE, lg.sport)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(0, Qt.Checked if wanted is None or lg.code in wanted else Qt.Unchecked)
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
-            item.setToolTip(0, f"{lg.country} – {lg.name} ({lg.code}); nadchodzące mecze: {r.upcoming}, "
-                               f"zakończone w bazie: {r.finished}")
+            item.setToolTip(0, f"{sport_label(lg.sport)} · {lg.country} – {lg.name} ({lg.code}); nadchodzące mecze: "
+                               f"{r.upcoming}, zakończone w bazie: {r.finished}")
             parent.addChild(item)
             self._leagues[lg.code] = item
         for parent in countries.values():
@@ -99,6 +114,16 @@ class LeagueTree(QWidget):
         self._updating = False
         self.changed.emit()
 
+    def set_sports(self, sports) -> None:
+        """Pokaż tylko ligi wybranych dyscyplin (None – wszystkie)."""
+        self._sports = None if sports is None else set(sports)
+        self._filter(self.search.text())
+
+    def sports(self) -> list[str]:
+        """Dyscypliny lig na liście (w kolejności z katalogu dyscyplin)."""
+        present = {item.data(0, SPORT_ROLE) for item in self._leagues.values()}
+        return [s for s in SPORT_ORDER if s in present]
+
     def set_country(self, country: str, checked: bool) -> None:
         for i in range(self.tree.topLevelItemCount()):
             parent = self.tree.topLevelItem(i)
@@ -120,6 +145,7 @@ class LeagueTree(QWidget):
                 child = parent.child(j)
                 hit = country_hit or query in normalize(child.text(0)) or query in normalize(
                     child.data(0, CODE_ROLE) or "")
+                hit = hit and (self._sports is None or child.data(0, SPORT_ROLE) in self._sports)
                 child.setHidden(not hit)
                 visible += hit
             parent.setHidden(visible == 0)

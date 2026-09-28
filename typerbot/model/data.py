@@ -40,6 +40,7 @@ class MatchTable:
     is_cup: np.ndarray
     neutral: np.ndarray | None = None    # teren neutralny (bez przewagi boiska)
     national: np.ndarray | None = None   # mecz reprezentacji
+    sport: np.ndarray | None = None      # dyscyplina (str)
     _team_rows: dict[int, np.ndarray] = field(default_factory=dict, repr=False)
 
     def __len__(self) -> int:
@@ -60,19 +61,27 @@ class MatchTable:
             "match_id", "t", "season", "home_id", "away_id", "hg", "ag", "hxg", "axg", "league", "is_cup")))
         out.neutral = self.neutral[mask] if self.neutral is not None else None
         out.national = self.national[mask] if self.national is not None else None
+        out.sport = self.sport[mask] if self.sport is not None else None
         return out
 
 
-def load_matches(db: Database, leagues: list[str] | None = None) -> MatchTable:
-    """Wszystkie zakończone mecze z wynikiem, posortowane według czasu."""
+FOOTBALL_SPORTS = ("football", "football_women")    # dyscypliny modelu Dixona-Colesa z rankingiem Elo
+
+
+def load_matches(db: Database, leagues: list[str] | None = None,
+                 sports: tuple[str, ...] | list[str] | None = FOOTBALL_SPORTS) -> MatchTable:
+    """Zakończone mecze z wynikiem, posortowane według czasu (domyślnie piłka nożna; `sports=None` – wszystkie)."""
     sql = ("SELECT m.id, m.kickoff, m.season, m.home_team_id, m.away_team_id, m.home_goals, m.away_goals, "
-           "m.home_xg, m.away_xg, m.league_code, l.is_cup, m.neutral, l.national FROM matches m "
+           "m.home_xg, m.away_xg, m.league_code, l.is_cup, m.neutral, l.national, l.sport FROM matches m "
            "JOIN leagues l ON l.code = m.league_code "
            "WHERE m.status = 'FINISHED' AND m.home_goals IS NOT NULL AND m.away_goals IS NOT NULL")
     params: tuple = ()
     if leagues:
         sql += f" AND m.league_code IN ({','.join('?' * len(leagues))})"
         params = tuple(leagues)
+    if sports is not None:
+        sql += f" AND l.sport IN ({','.join('?' * len(sports))})"
+        params += tuple(sports)
     rows = db.query(sql + " ORDER BY m.kickoff, m.id", params)
     t = np.array([to_days(datetime.fromisoformat(r["kickoff"].replace("Z", "+00:00"))) for r in rows], dtype=float)
 
@@ -86,7 +95,7 @@ def load_matches(db: Database, leagues: list[str] | None = None) -> MatchTable:
         hxg=np.array([np.nan if r["home_xg"] is None else r["home_xg"] for r in rows], dtype=float),
         axg=np.array([np.nan if r["away_xg"] is None else r["away_xg"] for r in rows], dtype=float),
         league=col("league_code", object), is_cup=col("is_cup", bool),
-        neutral=col("neutral", bool), national=col("national", bool),
+        neutral=col("neutral", bool), national=col("national", bool), sport=col("sport", object),
     )
 
 

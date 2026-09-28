@@ -20,6 +20,7 @@ from typerbot.config.settings import CouponSettings
 from typerbot.data.errors import STATE_LABELS
 from typerbot.data.quota import StatusBoard
 from typerbot.data.records import SCHEDULED, parse_iso, to_iso
+from typerbot.config.sports import sport_label
 from typerbot.data.sources import SOURCE_LABELS
 from typerbot.fmt import form, num, pct, plural
 from typerbot.services.sync import SyncReport, load_last_report
@@ -220,7 +221,7 @@ def diagnose(service: CouponService, cfg: CouponSettings, coupons: list[Coupon],
     sources = _source_counts(db, in_leagues, states)
     evaluated = service._evaluated
     stages = [Stage("Mecze w bazie w zakresie dat (wszystkie ligi)", len(in_window)),
-              Stage("W wybranych ligach", len(in_leagues)),
+              Stage("W wybranych ligach" + (" i dyscyplinach" if cfg.sports else ""), len(in_leagues)),
               Stage("Z prognozą modelu", len(evaluated))]
     for _key, label, cands in service.candidate_stages(cfg):
         stages.append(Stage(label, len({c.match_id for c in cands}), len(cands)))
@@ -294,8 +295,13 @@ def _source_counts(db, match_ids: list[int], states) -> list[SourceCount]:
 
 
 def _league_names(db, codes) -> dict[str, str]:
-    return {r["code"]: (f"{r['name']} ({r['country']})" if r["country"] else r["name"])
-            for r in db.query("SELECT code, name, country FROM leagues") if r["code"] in set(codes)}
+    def name(r) -> str:
+        if r["sport"] != "football":
+            return f"{r['name']} ({sport_label(r['sport']).lower()})"
+        return f"{r['name']} ({r['country']})" if r["country"] else r["name"]
+
+    wanted = set(codes)
+    return {r["code"]: name(r) for r in db.query("SELECT code, name, country, sport FROM leagues") if r["code"] in wanted}
 
 
 def _neighbours(db, leagues: set[str], start: datetime, end: datetime) -> tuple[str | None, str | None, list[str]]:
@@ -331,9 +337,16 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
     no_odds = [mid for mid, (_, evals) in evaluated.items()
                if not any(e.odds and e.odds_source not in ("estimated", "manual") for e in evals)]
     if no_odds and len(no_odds) < len(evaluated):
-        notes.append(f"{plural(len(no_odds), 'mecz', 'mecze', 'meczów')} bez kursów bukmacherów – mają kurs "
-                     "szacunkowy z prognozy modelu (sprawdź u bukmachera). Pliki z kursami pojawiają się w piątek "
-                     "(weekend) i we wtorek (środek tygodnia).")
+        football = [m for m in no_odds if evaluated[m][0].sport == "football"]
+        other = [m for m in no_odds if evaluated[m][0].sport != "football"]
+        if football:
+            notes.append(f"{plural(len(football), 'mecz', 'mecze', 'meczów')} piłki nożnej bez kursów bukmacherów – "
+                         "mają kurs szacunkowy z prognozy modelu (sprawdź u bukmachera). Pliki z kursami pojawiają "
+                         "się w piątek (weekend) i we wtorek (środek tygodnia).")
+        if other:
+            names = ", ".join(sorted({sport_label(evaluated[m][0].sport).lower() for m in other}))
+            notes.append(f"{plural(len(other), 'mecz', 'mecze', 'meczów')} innych dyscyplin ({names}) bez kursów "
+                         "w źródłach – kurs szacunkowy z prognozy modelu (sprawdź u bukmachera).")
 
     if diag.ok:
         if diag.coupons < cfg.alternatives:
@@ -378,9 +391,13 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
         playing = sorted(((sum(1 for d in _day_list(db, c, diag.start, diag.end)), c) for c in other_leagues),
                          reverse=True)
         shown = ", ".join(f"{names.get(c, c)}: {n}" for n, c in playing[:6]) + (" i inne" if len(playing) > 6 else "")
-        reasons.append(f"W wybranych ligach nie ma meczów na {period}. W tym terminie grają: {shown}.")
+        where = "W wybranych dyscyplinach i ligach" if cfg.sports else "W wybranych ligach"
+        reasons.append(f"{where} nie ma meczów na {period}. W tym terminie grają: {shown}.")
         _break_hint(reasons, hints, before, nxt)
-        hints.append("Zaznacz te ligi albo całe kraje w sekcji „Zaawansowane”.")
+        if cfg.sports:
+            hints.append("Zaznacz więcej dyscyplin (pod zakresem dat) albo lig w sekcji „Zaawansowane”.")
+        else:
+            hints.append("Zaznacz te ligi albo całe kraje w sekcji „Zaawansowane”.")
         if next_text:
             hints.append(next_text)
         return
@@ -402,11 +419,21 @@ def _explain(diag: Diagnosis, service: CouponService, cfg: CouponSettings, repor
         return
     if "estimated" in count and count["estimated"] == 0:
         days = sorted({_local_day(evaluated[m][0].kickoff) for m in evaluated})
-        reasons.append(f"Żaden mecz na {period} nie ma jeszcze kursów bukmacherów "
-                       f"({plural(len(evaluated), 'mecz', 'mecze', 'meczów')} tylko z terminarza: "
-                       f"{', '.join(day_label(_date(d)) for d in days[:5])}).")
-        hints.append("Kursy football-data.co.uk pojawiają się w piątek po południu (mecze weekendowe) i we wtorek "
-                     "po południu (mecze w środku tygodnia).")
+        sports = {evaluated[m][0].sport for m in evaluated}
+        if sports & {"football", "american_football"}:
+            reasons.append(f"Żaden mecz na {period} nie ma jeszcze kursów bukmacherów "
+                           f"({plural(len(evaluated), 'mecz', 'mecze', 'meczów')} tylko z terminarza: "
+                           f"{', '.join(day_label(_date(d)) for d in days[:5])}).")
+        else:
+            names = ", ".join(sport_label(x).lower() for x in sorted(sports))
+            reasons.append(f"Źródła nie podają kursów w tych dyscyplinach ({names}) – "
+                           f"{plural(len(evaluated), 'mecz', 'mecze', 'meczów')} tylko z terminarza.")
+        if "football" in sports:
+            hints.append("Kursy football-data.co.uk pojawiają się w piątek po południu (mecze weekendowe) i we wtorek "
+                         "po południu (mecze w środku tygodnia).")
+        if sports - {"football", "american_football"}:
+            hints.append("W piłce ręcznej, hokeju i baseballu źródła nie podają kursów – takie mecze mają tylko kurs "
+                         "szacunkowy.")
         if cfg.estimated_odds == "never":
             hints.append("Albo w „Zaawansowanych” wybierz „Kursy szacunkowe: gdy brak prawdziwych” – kupon dostanie "
                          "kursy szacunkowe z prognozy modelu (sprawdź je u bukmachera).")
@@ -511,7 +538,8 @@ def _scarcity(service: CouponService, diag: Diagnosis, leagues: set[str], in_win
     if tue_thu and before_file and not any(d in with_odds for d in tue_thu):
         out.append("Kursy na mecze od wtorku do czwartku football-data.co.uk publikuje we wtorek po południu – "
                    "kliknij „Odśwież dane” we wtorek wieczorem, będzie więcej meczów z kursami.")
-    busy = _busy_day(service.db, leagues, diag.end, max(8, 2 * max(in_window, 1)))
+    selected = diag.stages[1].matches if len(diag.stages) > 1 else in_window    # mecze wybranych lig i dyscyplin
+    busy = _busy_day(service.db, leagues, diag.end, max(8, 2 * max(selected, 1)))
     if busy:
         out.append(f"Więcej meczów w wybranych ligach: od {day_label(_date(busy[0]))} "
                    f"({plural(busy[1], 'mecz', 'mecze', 'meczów')} tego dnia) – wybierz zakres „Własny”.")

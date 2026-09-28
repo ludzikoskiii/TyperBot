@@ -254,7 +254,8 @@ def _backtest(db: Database, args: argparse.Namespace, current: int) -> None:
         return
     settings = SettingsStore(db).load()
     leagues = [x.strip().upper() for x in args.ligi.split(",")] if args.ligi else [
-        r["code"] for r in db.query("SELECT code FROM leagues WHERE enabled = 1 AND is_cup = 0 ORDER BY sort_order")]
+        r["code"] for r in db.query("SELECT code FROM leagues WHERE enabled = 1 AND is_cup = 0 AND sport = 'football' "
+                                  "ORDER BY sort_order")]
     seasons = [int(x) for x in args.sezony.split(",")] if args.sezony else default_seasons(db, leagues, current)
     coupon = settings.coupon
     if args.tryb:
@@ -288,7 +289,8 @@ def cmd_tune(args: argparse.Namespace) -> int:
     store = SettingsStore(db)
     settings = store.load()
     leagues = [x.strip().upper() for x in args.ligi.split(",")] if args.ligi else [
-        r["code"] for r in db.query("SELECT code FROM leagues WHERE enabled = 1 AND is_cup = 0 ORDER BY sort_order")]
+        r["code"] for r in db.query("SELECT code FROM leagues WHERE enabled = 1 AND is_cup = 0 AND sport = 'football' "
+                                  "ORDER BY sort_order")]
     seasons = [int(x) for x in args.sezony.split(",")] if args.sezony else default_seasons(
         db, leagues, service.current_season())
     config = BacktestConfig(leagues=leagues, seasons=seasons)
@@ -358,7 +360,42 @@ def cmd_predict(args: argparse.Namespace) -> int:
 
 def cmd_backtest(args: argparse.Namespace) -> int:
     service = _real_service()
+    if getattr(args, "dyscyplina", None):
+        return _sport_backtest(service.db, args)
     _backtest(service.db, args, service.current_season())
+    return 0
+
+
+def _sport_backtest(db: Database, args: argparse.Namespace) -> int:
+    """Backtest modelu wyników innej dyscypliny (NFL, MLB, piłka ręczna, hokej)."""
+    from typerbot.cli_coupons import parse_sports
+    from typerbot.config.sports import sport_label
+    from typerbot.model.backtest_sports import run_sport_backtest
+
+    code = parse_sports(args.dyscyplina)[0]
+    seasons = [int(x) for x in args.sezony.split(",")] if args.sezony else None
+    res = run_sport_backtest(db, code, seasons)
+    if res is None:
+        _out(f"Za mało wyników ({sport_label(code)}) – uruchom najpierw: python -m typerbot sync")
+        return 1
+    _out(f"BACKTEST – {sport_label(code)}, sezony {', '.join(map(str, res.seasons))}: {res.matches} meczów "
+         "(model dopasowywany co tydzień na wcześniejszych meczach)")
+    _out(f"  {'Rynek':<24}{'mecze':>7}{'log loss':>10}{'Brier':>8}{'trafność':>10}")
+    naive = res.naive.summary()
+    _out(f"  {'zwycięzca – naiwna':<24}{naive['n']:>7}{naive['log_loss']:>10.4f}{naive['brier']:>8.4f}"
+         f"{100 * naive['accuracy']:>9.1f}%")
+    for market in sorted(set(res.model) | set(res.market)):
+        for who, score in (("model", res.model.get(market)), ("rynek", res.market.get(market))):
+            if score is None or not score.n:
+                continue
+            x = score.summary()
+            _out(f"  {market + ' – ' + who:<24}{x['n']:>7}{x['log_loss']:>10.4f}{x['brier']:>8.4f}"
+                 f"{100 * x['accuracy']:>9.1f}%")
+    _out("  Kalibracja (zwycięzca/1: średnia prognoza → odsetek zwycięstw gospodarzy):")
+    for p, freq, n in res.calibration:
+        _out(f"    {100 * p:5.1f}% → {100 * freq:5.1f}% ({n})")
+    _out("Niższy log loss i Brier = lepsza prognoza. Rynek (kursy zamknięcia bez marży) zwykle jest lepszy od "
+         "modelu – dlatego, gdy są kursy, prognoza opiera się na rynku.")
     return 0
 
 
@@ -370,6 +407,7 @@ def _add_backtest_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--prog", type=float, default=0.0, help="minimalna przewaga typu value, np. 0.05")
     p.add_argument("--obnizka", type=float, default=0.0,
                    help="obniżka kursów względem średniej rynkowej, np. 0.03 (wyższa marża polskiego bukmachera)")
+    p.add_argument("--dyscyplina", help="backtest modelu innej dyscypliny: nfl, mlb, reczna, hokej")
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
@@ -418,7 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--value", action="store_true", help="pokaż tylko typy value")
     p.set_defaults(func=cmd_selections)
 
-    p = sub.add_parser("kupon", help="generator kuponów o zadanym kursie (3 alternatywy)")
+    p = sub.add_parser("kupon", help="generator kuponów o zadanym kursie (kilka alternatyw, --ile)")
     add_coupon_args(p)
     p.add_argument("--wymien", help="zdarzenie do wymiany, np. A2 (kupon A, pozycja 2)")
     p.add_argument("--na", type=int, help="numer zamiennika z listy")

@@ -1,9 +1,10 @@
 """Prognozy dla nadchodzących meczów.
 
-Model (Dixon-Coles + ranking Elo) jest dopasowywany do wszystkich lig z bazy naraz;
+Piłka nożna: model (Dixon-Coles + ranking Elo) jest dopasowywany do wszystkich lig z bazy naraz;
 drużyny z samymi wynikami (bez długiej historii w oknie modelu) i reprezentacje dostają
-prognozę z rankingu Elo. Wyniki trafiają do tabeli `predictions` – z niej korzysta
-interfejs i generator.
+prognozę z rankingu Elo. Inne dyscypliny: model wyników, osobno dla każdej dyscypliny – z liniami
+handicapu i sumy od bukmachera (jeśli są) i wokół mediany. Wyniki trafiają do tabeli `predictions`
+– z niej korzysta interfejs i generator.
 """
 
 from __future__ import annotations
@@ -15,11 +16,13 @@ from datetime import datetime, timezone
 from typerbot.config.settings import ModelSettings, SettingsStore
 from typerbot.data.db import Database
 from typerbot.data.records import to_iso
-from typerbot.model.data import load_matches
+from typerbot.config.sports import football_like
+from typerbot.model.data import FOOTBALL_SPORTS, load_matches
 from typerbot.model.markets import Key
-from typerbot.model.predictor import HybridModel, Prediction
+from typerbot.model.multisport import MultiSportModel
+from typerbot.model.predictor import Prediction
 
-_MODEL_CACHE: dict[tuple, HybridModel | None] = {}
+_MODEL_CACHE: dict[tuple, MultiSportModel | None] = {}
 
 
 @dataclass
@@ -48,9 +51,9 @@ class PredictionService:
         self.db = db
         self.settings_store = SettingsStore(db)
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self.model: HybridModel | None = None
+        self.model: MultiSportModel | None = None
 
-    def fit(self, at: datetime | None = None, settings: ModelSettings | None = None) -> HybridModel | None:
+    def fit(self, at: datetime | None = None, settings: ModelSettings | None = None) -> MultiSportModel | None:
         """Dopasowanie modelu na danych do chwili `at`. Wynik jest zapamiętywany, dopóki nie zmienią się
         dane, ustawienia ani (w przybliżeniu do 10 minut) chwila dopasowania – kolejne generowania są szybkie."""
         settings = settings or self.settings_store.load().model
@@ -61,8 +64,11 @@ class PredictionService:
         if key in _MODEL_CACHE:
             self.model = _MODEL_CACHE[key]
             return self.model
-        table = load_matches(self.db)
-        self.model = HybridModel.fit(table, at, settings) if len(table) else None
+        league_sport = {r["code"]: r["sport"] for r in self.db.query("SELECT code, sport FROM leagues")}
+        others = sorted({sp for sp in league_sport.values() if not football_like(sp)})
+        tables = {sp: load_matches(self.db, sports=(sp,)) for sp in others}
+        self.model = MultiSportModel.fit(load_matches(self.db, sports=FOOTBALL_SPORTS),
+                                         {sp: t for sp, t in tables.items() if len(t)}, at, settings, league_sport)
         if len(_MODEL_CACHE) >= 4:
             _MODEL_CACHE.pop(next(iter(_MODEL_CACHE)))
         _MODEL_CACHE[key] = self.model
@@ -79,11 +85,23 @@ class PredictionService:
             "WHERE m.status = 'SCHEDULED' AND m.kickoff >= ? AND m.kickoff < ? ORDER BY m.kickoff",
             (to_iso(start), to_iso(end)),
         )
+        lines: dict[int, dict[str, list[float]]] = {}
+        for o in self.db.query(
+                "SELECT DISTINCT o.match_id, o.market, o.line FROM odds o JOIN matches m ON m.id = o.match_id "
+                "WHERE o.market IN ('OU', 'HCP') AND o.kind = 'pre' AND m.status = 'SCHEDULED' "
+                "AND m.kickoff >= ? AND m.kickoff < ?", (to_iso(start), to_iso(end))):
+            lines.setdefault(o["match_id"], {}).setdefault(o["market"], []).append(float(o["line"]))
         out = []
         for r in rows:
-            pred = model.predict(r["home_team_id"], r["away_team_id"], r["league_code"], neutral=bool(r["neutral"]))
-            out.append(MatchPrediction(r["id"], r["league_code"], r["kickoff"], r["home"], r["away"], pred,
-                                       model.team_matches(r["home_team_id"]), model.team_matches(r["away_team_id"])))
+            extra = lines.get(r["id"], {})
+            pred = model.predict(r["home_team_id"], r["away_team_id"], r["league_code"], neutral=bool(r["neutral"]),
+                                 ou_lines=extra.get("OU", ()), hcp_lines=extra.get("HCP", ()))
+            if pred is None:
+                continue
+            league = r["league_code"]
+            out.append(MatchPrediction(r["id"], league, r["kickoff"], r["home"], r["away"], pred,
+                                       model.team_matches(r["home_team_id"], league),
+                                       model.team_matches(r["away_team_id"], league)))
         if save:
             self._save(out)
         return out

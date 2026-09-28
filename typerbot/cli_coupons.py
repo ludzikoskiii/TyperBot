@@ -7,6 +7,7 @@ import sys
 from dataclasses import replace
 
 from typerbot.config.settings import CouponSettings, MARKETS
+from typerbot.config.sports import sport_label, sport_of
 from typerbot.data.db import Database
 from typerbot.fmt import num as _pl, pct as _pct, plural, signed_pct
 from typerbot.services.coupons import LETTERS, Coupon, CouponService, kickoff_local
@@ -38,7 +39,35 @@ def coupon_settings_from_args(base: CouponSettings, args: argparse.Namespace) ->
         cfg.markets = [x.strip().upper() for x in args.rynki.split(",") if x.strip().upper() in MARKETS]
     if getattr(args, "z_malo_danych", False):
         cfg.include_low_data = True
+    if getattr(args, "dyscypliny", None):
+        cfg.sports = parse_sports(args.dyscypliny)
     return cfg
+
+
+SPORT_ALIASES = {
+    "pilka": "football", "pilka nozna": "football", "nozna": "football", "soccer": "football",
+    "kobiet": "football_women", "pilka nozna kobiet": "football_women",
+    "nfl": "american_football", "futbol": "american_football", "futbol amerykanski": "american_football",
+    "mlb": "baseball", "reczna": "handball", "pilka reczna": "handball", "hokej": "hockey",
+    "hokej na lodzie": "hockey", "koszykowka": "basketball", "kosz": "basketball",
+}
+
+
+def parse_sports(text: str) -> list[str]:
+    """„pilka,nfl,hokej” albo kody („football,american_football”) → kody dyscyplin."""
+    from typerbot.config.sports import SPORTS
+    from typerbot.data.teams import normalize
+
+    by_label = {normalize(s.label): code for code, s in SPORTS.items()}
+    out = []
+    for part in text.split(","):
+        key = normalize(part)
+        code = part.strip() if part.strip() in SPORTS else SPORT_ALIASES.get(key) or by_label.get(key)
+        if code is None:
+            raise SystemExit(f"Nieznana dyscyplina: {part.strip()} (np. pilka, nfl, mlb, reczna, hokej)")
+        if code not in out:
+            out.append(code)
+    return out
 
 
 # -- typy ---------------------------------------------------------------------------------------
@@ -55,8 +84,9 @@ def print_selections(service: CouponService, cfg: CouponSettings, only_value: bo
         if not rows:
             continue
         flags = f"  [{'; '.join(info.flags)}]" if info.flags else ""
+        unit = "gole" if info.sport == "football" else sport_of(info.sport).unit[1]
         _out(f"\n{kickoff_local(info.kickoff)}  {info.league:<4} {info.home} – {info.away}  "
-             f"(oczekiwane gole {_pl(info.lam_home)}:{_pl(info.lam_away)}){flags}")
+             f"(oczekiwane {unit} {_pl(info.lam_home)}:{_pl(info.lam_away)}){flags}")
         _out(f"   {'Typ':<22}{'Prognoza':>9}{'Model':>7}{'Rynek':>7}{'Kurs':>7}  {'Źródło':<10}{'Implik.':>8}"
              f"{'EV':>8}{'EV po pod.':>12}")
         for e in rows:
@@ -81,7 +111,8 @@ def print_coupon(coupon: Coupon, letter: str, with_rationale: bool = True) -> No
     for i, leg in enumerate(coupon.legs, 1):
         s, m = leg.selection, leg.match
         odds = _pl(s.odds) if s.odds else "–"
-        _out(f"  {letter}{i}. {kickoff_local(m.kickoff)} {m.league:<4} {m.home} – {m.away}: {s.label} "
+        where = m.league if m.sport == "football" else f"{m.league} ({sport_label(m.sport).lower()})"
+        _out(f"  {letter}{i}. {kickoff_local(m.kickoff)} {where:<4} {m.home} – {m.away}: {s.label} "
              f"@ {odds} {s.source_label}".rstrip() + f" · prognoza {_pct(s.probability)}" + (" ★" if s.is_value else ""))
         if with_rationale:
             for line in leg.rationale:
@@ -169,3 +200,4 @@ def add_coupon_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--rynki", help="np. 1X2,DC,OU,BTTS")
     p.add_argument("--z-malo-danych", action="store_true", help="dopuść drużyny z małą liczbą meczów")
     p.add_argument("--ile", type=int, choices=range(1, 21), metavar="1–20", help="ile kuponów ułożyć")
+    p.add_argument("--dyscypliny", help="np. pilka,nfl,mlb,reczna,hokej (domyślnie wszystkie)")

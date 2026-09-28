@@ -1,7 +1,8 @@
 # TyperBot
 
-Aplikacja desktopowa (Python + PySide6 + SQLite), która analizuje nadchodzące mecze piłkarskie,
-szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o zadanym kursie.
+Aplikacja desktopowa (Python + PySide6 + SQLite), która analizuje nadchodzące mecze – piłkę nożną i inne
+dyscypliny (futbol amerykański, baseball, piłka ręczna, hokej) – szacuje prawdopodobieństwa (Dixon-Coles
+z rankingiem Elo w piłce nożnej, model wyników w pozostałych dyscyplinach) i układa kupon o zadanym kursie.
 
 > **To narzędzie analityczne, nie gwarancja wygranej.** Bukmacher ma marżę, a w Polsce dochodzi
 > 12% podatku od stawki. Większość kuponów ma ujemną wartość oczekiwaną i aplikacja pokazuje to
@@ -19,6 +20,7 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
 | 5 | Dopracowanie, plik .exe | **gotowy** |
 | 6 | Kalibracja modelu na historii football-data.co.uk, nowy optymalizator kuponów | **gotowy** |
 | 7 | Tylko źródła bez klucza i rejestracji, 38+ lig z całego świata, ranking Elo, kursy szacunkowe | **gotowy** |
+| 8 | Inne dyscypliny (NFL, MLB, piłka ręczna, hokej i ligi z OpenLigaDB), wybór dyscyplin | **gotowy** |
 
 ## Uruchomienie na Windows
 
@@ -60,7 +62,7 @@ szacuje prawdopodobieństwa modelem Poissona / Dixona-Colesa i układa kupon o z
    python -m typerbot demo --backtest              # + prognozy i backtest modelu na danych demo
    ```
 
-Testy: `python -m pytest` (ok. 6 minut; obejmują też interfejs i test „każdy dzień tygodnia”).
+Testy: `python -m pytest` (kilka minut; obejmują też interfejs, inne dyscypliny i test „każdy dzień tygodnia”).
 
 ## Plik .exe (bez instalowania Pythona)
 
@@ -78,10 +80,12 @@ Trzy zakładki: **Kupony**, **Historia**, **Ustawienia**.
 
 1. **Kurs docelowy** (duże pole, np. 5,00).
 2. Zakres: **Dziś** / **Jutro** / **Najbliższe 3 dni** / **Własny** (od–do).
-3. Duży przycisk **Generuj kupony** – obok pojawia się do 5 kuponów (liczba w „Zaawansowanych”, do 20),
+3. **Dyscypliny** – pola wyboru dyscyplin, dla których są dane (piłka nożna, futbol amerykański, baseball,
+   piłka ręczna, hokej…). Kupon może łączyć dyscypliny; odznacz te, których nie chcesz.
+4. Duży przycisk **Generuj kupony** – obok pojawia się do 5 kuponów (liczba w „Zaawansowanych”, do 20),
    posortowanych od najwyższej szansy trafienia.
 
-Każdy kupon wygląda jak kupon u bukmachera: mecz (liga, godzina), typ, kurs (≈ i kolor ostrzegawczy =
+Każdy kupon wygląda jak kupon u bukmachera: mecz (dyscyplina, liga, godzina), typ, kurs (≈ i kolor ostrzegawczy =
 kurs szacunkowy), pasek prawdopodobieństwa i **jedno zdanie uzasadnienia** (np. „Arsenal wygrał 7 z 9 ostatnich
 meczów u siebie; model 64% i rynek 61%.”). Pod typami: **kurs łączny**, **kurs po podatku (−12%)**,
 **szansa trafienia** (i osobno model / rynek) oraz przycisk **Kopiuj kupon** (tekst do schowka;
@@ -95,7 +99,7 @@ value), maks. różnica model–rynek (8 pkt), **kursy szacunkowe** (domyślnie 
 **kraje i ligi** (wyszukiwarka i zaznaczanie całych krajów), rynki, drużyny „mało danych”
 i **Zapisz jako domyślne**. Przycisk **Diagnostyka** pokazuje, skąd przyszły
 mecze i kursy i ile odpada na każdym filtrze. Przełącznik **Wszystkie mecze** po prawej pokazuje
-dawną zakładkę „Mecze”: prognozy 1 / X / 2 / >2,5 / BTTS i po kliknięciu wszystkie typy meczu
+dawną zakładkę „Mecze”: prognozy 1 / X / 2 / powyżej / BTTS i po kliknięciu wszystkie typy meczu
 (prognoza, model, rynek, kurs, EV, EV po podatku) z opisem formy, średnich i bilansu.
 
 **Historia** – wszystkie ułożone kupony (ten sam zestaw typów tylko raz) z wynikiem **trafiony /
@@ -136,6 +140,9 @@ nietrafiony – 0. Zwrot (ROI) = wynik / liczba rozliczonych kuponów. Podatku o
 | **OpenLigaDB** | terminarz i wyniki na bieżąco (bez kursów) | Bundesliga 1–3, Puchar Niemiec | na bieżąco | bez klucza; limit serwisu 1000 zapytań/godz. – aplikacja wysyła kilka |
 | **international_results** (GitHub) | wyniki reprezentacji od 1872 r. – ranking Elo reprezentacji | wszystkie reprezentacje | ok. raz w miesiącu | domena publiczna (CC0) |
 | **openfootball/clubs** | warianty nazw klubów („Man United” = „Manchester United FC”) | 27 krajów | rzadko (co 30 dni) | domena publiczna (CC0) |
+| **nflverse** (games.csv na GitHubie) | **futbol amerykański (NFL)**: terminarz całego sezonu, wyniki od 1999 r. i **prawdziwe kursy** (zwycięzca, handicap, suma punktów) na najbliższą kolejkę, po meczu kursy zamknięcia | NFL | codziennie | bez klucza; dane nflverse udostępniane do analiz (CC-BY 4.0; licencja samego pliku games.csv jest w trakcie wyjaśniania przez autorów) |
+| **MLB Stats API** | **baseball (MLB)**: terminarz (także play-off) i wyniki na bieżąco, bez kursów | MLB | na bieżąco | oficjalne API bez klucza; warunki MLB: użytek indywidualny, niekomercyjny, bez masowego pobierania – aplikacja pyta kilka razy dziennie o najbliższe dni |
+| **OpenLigaDB – ligi społeczności** | inne dyscypliny i ligi prowadzone przez użytkowników serwisu: **piłka ręczna, hokej**, piłka nożna kobiet, niższe ligi niemieckie (bez kursów) | to, co jest w serwisie (głównie Niemcy) | na bieżąco | jak OpenLigaDB wyżej; listę lig aplikacja sprawdza raz w tygodniu |
 
 Nie używamy źródeł, które wymagają klucza, rejestracji albo mają limit miesięczny (The Odds API,
 OddsPapi, football-data.org, API-Football – usunięte; zapisane wcześniej klucze aplikacja sama kasuje
@@ -143,8 +150,18 @@ z Menedżera poświadczeń), ani stron, których regulamin zabrania automatyczne
 (np. Flashscore, SofaScore, FotMob, FBref) lub które są za logowaniem (Club Elo od 23.09.2026).
 
 **Lista lig budowana jest z danych:** pokazujemy ligi, dla których są mecze w bazie; liga, która pojawi się
-w plikach football-data.co.uk, a nie ma jej w katalogu, dopisuje się sama. Źródła opcjonalne (openfootball,
-OpenLigaDB, reprezentacje) można wyłączyć w *Ustawienia → Źródła danych*.
+w plikach football-data.co.uk, a nie ma jej w katalogu, dopisuje się sama. Tak samo ligi z OpenLigaDB – ale
+tylko prawdziwe, trwające rozgrywki: co najmniej 6 drużyn i 20 meczów, mecze w najbliższych tygodniach,
+bez lig do typowania wśród znajomych („Tippspiel”), testowych i kopii lig, które już mamy (rozpoznawanych po
+drużynach); zagraniczne ligi piłkarskie z OpenLigaDB pomijamy (mamy je z football-data.co.uk). Źródła
+opcjonalne (openfootball, OpenLigaDB i jej ligi społeczności, reprezentacje, NFL, MLB) można wyłączyć
+w *Ustawienia → Źródła danych*.
+
+**Inne dyscypliny – czego nie dodaliśmy i dlaczego:** hokej NHL (regulamin NHL.com zabrania automatycznego
+pobierania), koszykówka NBA i Euroliga (nie udało się potwierdzić, że regulamin pozwala na automatyczne
+pobieranie), tenis (brak darmowego źródła nadchodzących meczów: repozytoria Jeffa Sackmanna usunięto z GitHuba
+we wrześniu 2026, a pliki tennis-data.co.uk pojawiają się dopiero po turnieju), siatkówka i polskie ligi
+innych dyscyplin (brak darmowego źródła z terminarzem bez klucza).
 
 **Bez internetu:** wszystko, co pobrane, zostaje w bazie SQLite, a odpowiedzi są w cache. Przy braku
 internetu albo awarii źródła aplikacja działa na ostatnich danych i pokazuje ich datę (pasek stanu,
@@ -152,7 +169,9 @@ Diagnostyka, *Ustawienia → Źródła danych*). Każde źródło to osobny modu
 awaria jednego nie blokuje pozostałych.
 
 **Czego darmowe źródła bez klucza nie dają:** terminarza meczów reprezentacji, większości lig Afryki
-i Azji oraz niższych lig w większości krajów. W przerwach reprezentacyjnych (np. **21.09–06.10.2026**)
+i Azji oraz niższych lig w większości krajów (np. polskiej I i II ligi – openfootball ma je tylko za sezon
+2024/25; niższe ligi, które są: Anglia 2–5, Szkocja 2–4, Niemcy 2–3 i ligi regionalne z OpenLigaDB,
+Hiszpania, Włochy i Francja 2). W przerwach reprezentacyjnych (np. **21.09–06.10.2026**)
 czołowe ligi nie grają – grają głównie niższe ligi angielskie i ligi spoza Europy; diagnostyka
 w takiej sytuacji mówi to wprost i podaje najbliższy termin meczów w wybranych ligach.
 
@@ -169,8 +188,10 @@ python -m typerbot backtest             # test modelu na 3 ostatnich zakończony
 python -m typerbot backtest --ligi PL,EKS --sezony 2023,2024,2025 --tryb value --kurs 3
 python -m typerbot strojenie --zapisz   # dobór parametrów modelu na Twojej historii
 python -m typerbot typy --dni 3 --value # ocena typów: prognoza, kurs, implikowane, EV (★ = value)
-python -m typerbot kupon                # 3 kupony wg ustawień (domyślnie kurs 5,00 ±10%, 3 dni)
+python -m typerbot kupon                # kupony wg ustawień (domyślnie 5 kuponów, kurs 5,00 ±10%, 3 dni)
 python -m typerbot kupon --jutro --kurs 3 --ligi PL,EKS --rynki 1X2,DC
+python -m typerbot kupon --dyscypliny pilka,nfl,hokej        # wybrane dyscypliny
+python -m typerbot backtest --dyscyplina nfl                 # model innej dyscypliny: nfl, mlb, reczna, hokej
 python -m typerbot kupon --wymien A2    # zamienniki dla 2. zdarzenia kuponu A
 python -m typerbot kupon --wymien A2 --na 3        # wymiana i przeliczenie kuponu
 python -m typerbot kupon --kurs-reczny A2=1,95     # kurs z oferty bukmachera
@@ -211,6 +232,50 @@ prognoza i tak opiera się na rynku (udział modelu 0%); model decyduje tam, gdz
 
 Z macierzy wyników (0–10 bramek) liczone są wszystkie rynki: 1X2, podwójna szansa,
 powyżej/poniżej 2,5 i obie strzelą.
+
+## Inne dyscypliny
+
+| Dyscyplina | Źródło | Kursy | Rynki | Model |
+|---|---|---|---|---|
+| Futbol amerykański (NFL) | nflverse | **prawdziwe** na najbliższą kolejkę, dalej szacunkowe | zwycięzca, handicap, suma punktów | model wyników – rozkład normalny |
+| Baseball (MLB) | MLB Stats API | szacunkowe | zwycięzca, handicap ±1,5 („run line”), suma runów | model wyników – ujemny dwumianowy (runy mają większy rozrzut niż w rozkładzie Poissona) |
+| Piłka ręczna | OpenLigaDB (np. Handball-Bundesliga) | szacunkowe | 1X2, podwójna szansa, handicap, suma bramek | model wyników – rozkład normalny |
+| Hokej na lodzie | OpenLigaDB (np. DEL) | szacunkowe | zwycięzca, handicap ±1,5, suma goli | model wyników – Poisson |
+| Piłka nożna kobiet, koszykówka | OpenLigaDB, jeśli serwis ma takie ligi | szacunkowe | jak piłka nożna / jak NFL | Dixon-Coles + Elo / rozkład normalny |
+
+**Model wyników** (`typerbot/model/scores.py`): każda drużyna ma siłę ataku i obrony, każda liga – średnią
+liczbę punktów i przewagę gospodarzy; mecze starsze ważą mniej (okres połowicznego zaniku), siły są ściągane
+do średniej ligi (mniej danych = bliżej średniej). Z tego jest rozkład wyniku: w dyscyplinach z dużą liczbą
+punktów – rozkład normalny różnicy i sumy punktów (rozrzut z reszt modelu), w hokeju i baseballu – rozkład
+liczby goli/runów. Drużyna z mniej niż 6 meczami (baseball: 15) w oknie modelu to „mało danych”.
+
+**Dogrywka:** w dyscyplinach bez remisów (NFL, baseball, hokej, koszykówka) zwycięzca, handicap i suma są
+liczone i **rozliczane z dogrywką** (tak jak u bukmacherów: „zwycięzca meczu z dogrywką i karnymi”) – remis
+po czasie podstawowym model przenosi na wynik o 1 gol / run (w NFL o 3 punkty) wyższy dla jednej z drużyn.
+Na kuponie typ ma dopisek „(z dogrywką)”. W piłce ręcznej remis jest możliwy (1X2 jak w piłce nożnej).
+
+**Kursy:** gdy źródło podaje kursy (NFL), prognoza opiera się na rynku (kursy bez marży), tak jak w piłce
+nożnej, a na kupon trafiają tylko typy, w których model i rynek są zgodni. W pozostałych dyscyplinach kurs
+jest **szacunkowy** (≈): 1 / (prawdopodobieństwo × 1,07) – wyraźnie oznaczony, sprawdź go u bukmachera.
+Linie handicapu i sumy bez kursów model wybiera sam – blisko 50% (mediana) i o jeden krok obok.
+
+**Backtest NFL na prawdziwych danych** (nflverse, sezony 2021–2025, 1420 meczów; model dopasowywany co
+tydzień tylko na wcześniejszych meczach; parametry – okres połowicznego zaniku 150 dni, ściąganie 4 mecze –
+dobrane z małej siatki na sezonach 2018–2025, więc wynik modelu może być odrobinę zbyt optymistyczny):
+
+| Rynek | Model: log loss | Rynek (kursy zamknięcia): log loss | Prognoza naiwna | Trafność model / rynek |
+|---|---|---|---|---|
+| Zwycięzca | 0,641 | **0,610** | 0,689 | 63,6% / 66,3% |
+| Handicap (linia bukmachera) | 0,716 | **0,693** | 0,693 (50/50) | 48,7% / 50,4% |
+| Suma punktów (linia bukmachera) | 0,715 | **0,693** | 0,693 (50/50) | 49,6% / 51,6% |
+
+Wniosek: model zwycięzcy ma wartość (dużo lepszy od prognozy naiwnej, dobrze skalibrowany w przedziale
+45–85%), ale **rynek jest lepszy** – dlatego przy dostępnych kursach prognoza to rynek. Przy handicapie
+i sumie na linii bukmachera model **nie przewiduje lepiej niż rzut monetą** – typy z tych rynków bez
+prawdziwego kursu traktuj ostrożnie. Hokeja, piłki ręcznej i baseballu nie dało się sprawdzić na prawdziwych
+danych w środowisku, w którym powstawała aplikacja (serwisy były niedostępne) – parametry są typowe dla tych
+dyscyplin i sprawdzone na danych demo. Po pobraniu danych sprawdzisz je sam:
+`python -m typerbot backtest --dyscyplina hokej` (albo `reczna`, `mlb`, `nfl`).
 
 ## Ocena typów i generator kuponu
 
@@ -372,7 +437,8 @@ modelu w mieszance z rynkiem; `--zapisz` zapisuje wszystko w ustawieniach.
 
 Wszystko, co robi interfejs, jest też dostępne jako polecenia (`python -m typerbot --help`):
 `sync`, `status`, `mecze`, `prognozy`, `typy`, `kupon`, `diagnoza`, `backtest`, `strojenie`,
-`druzyny`, `demo`, `gui`.
+`druzyny`, `demo`, `gui`. Polecenia kuponów mają opcję `--dyscypliny` (np. `pilka,nfl,mlb,reczna,hokej`),
+a `backtest --dyscyplina nfl` sprawdza model innej dyscypliny.
 
 `python -m typerbot diagnoza` (te same parametry co `kupon`) pokazuje, ile meczów i kursów przyszło z każdego
 źródła, ile zostaje po każdym filtrze generatora i dlaczego kuponu nie da się ułożyć. `status` wypisuje też
@@ -385,6 +451,8 @@ listę problemów ze źródeł z ostatniej synchronizacji.
 | Pomarańczowa kropka, „Brak połączenia” | aplikacja działa na danych z bazy (data przy „dane z:”); sprawdź internet i odśwież później |
 | „Brak meczów” / „W wybranych ligach nie ma meczów” | często przerwa reprezentacyjna – diagnostyka podaje ligi grające w tym terminie i najbliższy termin wybranych lig; zaznacz więcej krajów w „Zaawansowanych” |
 | Mało kuponów („Ułożono 1 z 5”) | w zakresie dat jest mało meczów: przerwa reprezentacyjna, a kursy na mecze od wtorku do czwartku football-data.co.uk publikuje we wtorek po południu (wcześniej aplikacja zna tylko mecze z openfootball i OpenLigaDB). Komunikat mówi, ile meczów zostało i od którego dnia będzie ich więcej; odśwież dane we wtorek wieczorem, poszerz zakres dat albo wybierz „Kupony różnią się o: min. 1 mecz” |
+| Nie widzę piłki ręcznej lub hokeja | te ligi pochodzą z OpenLigaDB (ligi prowadzone przez społeczność serwisu): pojawią się po odświeżeniu danych, jeśli serwis ma trwający sezon; sprawdź *Ustawienia → Źródła danych → „Więcej lig i dyscyplin z OpenLigaDB”* |
+| Brak NFL lub MLB w terminie | poza sezonem (NFL: wrzesień–luty, MLB: kwiecień–październik) – diagnostyka poda najbliższy termin |
 | Kupon z kursami „≈” | mecze bez kursów bukmacherów (np. środa przed publikacją pliku we wtorek) – sprawdź kursy u bukmachera albo poczekaj na plik z kursami |
 | Generator nie ułożył kuponu | pod komunikatem jest konkretny powód i podpowiedź; przycisk **Diagnostyka** pokazuje, ile meczów i kursów przyszło z każdego źródła i ile zostaje po każdym filtrze |
 | „⚠ problemy ze źródeł: N” na pasku stanu | kliknij napis – lista problemów z ostatniej synchronizacji (źródło, ligi, stan, co zrobić) |
@@ -397,20 +465,24 @@ listę problemów ze źródeł z ostatniej synchronizacji.
 
 ```
 typerbot/
-├── config/        ustawienia (SQLite), katalog lig, usuwanie starych kluczy (keyring)
+├── config/        ustawienia (SQLite), katalog lig, dyscypliny (sports.py), usuwanie starych kluczy (keyring)
 ├── data/
 │   ├── db.py, schema.py        SQLite (WAL) i migracje
 │   ├── http.py, ratelimit.py   cache HTTP, ograniczanie zapytań
 │   ├── quota.py                liczba zapytań i status źródeł (data ostatnich danych)
 │   ├── teams.py, team_seeds.py dopasowanie nazw drużyn między źródłami (+ warianty z openfootball/clubs)
 │   ├── repository.py           zapis meczów i kursów, łączenie meczów z kilku źródeł
-│   └── sources/                football_data_csv (główne), openfootball, openligadb, international, club_names
+│   └── sources/                football_data_csv (główne), openfootball, openligadb (+ ligi społeczności),
+│                               international, club_names, nflverse (NFL), mlb (MLB Stats API)
 ├── model/
 │   ├── dixon_coles.py          dopasowanie modelu (gradient analityczny, L-BFGS), macierz wyników
 │   ├── data.py                 okno ostatnich meczów, wagi czasowe, „mało danych”, beniaminki
 │   ├── elo.py                  ranking Elo z wyników i zamiana na gole (Poisson)
 │   ├── predictor.py            prognozy meczów: Dixon-Coles + Elo, siła lig
-│   ├── markets.py              1X2, podwójna szansa, powyżej/poniżej, obie strzelą
+│   ├── scores.py               model wyników innych dyscyplin (rozkład normalny / Poisson / ujemny dwumianowy)
+│   ├── multisport.py           model dla wszystkich dyscyplin (piłka nożna + model wyników)
+│   ├── backtest_sports.py      backtest modelu wyników (model vs rynek vs prognoza naiwna)
+│   ├── markets.py              1X2, podwójna szansa, zwycięzca, handicap, powyżej/poniżej, obie strzelą
 │   ├── backtest.py             walk-forward, metryki, kalibracja, symulacja finansowa
 │   └── tuning.py               strojenie parametrów
 ├── betting/
@@ -426,7 +498,8 @@ typerbot/
 ├── services/stats.py           trafność kuponów i typów, wynik w jednostkach – miesiące, rynki, ligi
 ├── services/diagnostics.py     diagnostyka generatora: źródła, filtry, powód braku kuponu
 ├── ui/                         interfejs PySide6: okno, 3 zakładki, wykresy, motyw, zadania w tle
-├── demo/                       syntetyczny świat (7 lig z 6 krajów, reprezentacje) i transport udający źródła
+├── demo/                       syntetyczny świat (7 lig z 6 krajów, reprezentacje, NFL, MLB, piłka ręczna, hokej)
+│                               i transport udający źródła
 └── cli.py                      polecenia wiersza poleceń
 packaging/                      konfiguracja PyInstaller (TyperBot.exe)
 tests/                          testy jednostkowe, integracyjne i interfejsu (pytest)

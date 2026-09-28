@@ -41,6 +41,8 @@ _SPECIAL = str.maketrans({
 SOURCE_PRIORITY = {
     "manual": 5,
     "openligadb": 3,
+    "nflverse": 3,
+    "mlb": 3,
     "openfootball": 3,
     "international": 2,
     "football_data_csv": 1,
@@ -132,7 +134,10 @@ class TeamMatcher:
         hints: tuple[str, ...] = (),
         is_cup: bool = False,
         country: str = "",
+        sport: str = "football",
     ) -> Resolution:
+        """Drużyna dla nazwy ze źródła. Kandydatami są tylko drużyny tej samej dyscypliny – „SC Magdeburg”
+        (piłka ręczna) i „1. FC Magdeburg” (piłka nożna) to różne drużyny."""
         name = name.strip()
         key = (source, league_code, name)
         if key in self._cache:
@@ -147,16 +152,19 @@ class TeamMatcher:
             return Resolution(row["team_id"], "alias")
 
         row = conn.execute(
-            "SELECT team_id FROM team_aliases WHERE source = ? AND name = ? LIMIT 1", (source, name)
+            "SELECT a.team_id FROM team_aliases a LEFT JOIN leagues l ON l.code = a.league_code "
+            "WHERE a.source = ? AND a.name = ? AND COALESCE(l.sport, 'football') = ? LIMIT 1", (source, name, sport)
         ).fetchone()
         if row:
             return self._link(conn, source, league_code, name, Resolution(row["team_id"], "exact"))
 
         names = [name, *[h for h in hints if h]]
         norms = [normalize(n) for n in names]
-        groups = {g for g in (seed_group(n) for n in names) if g is not None}
-        clubs = {c for c in (self._club(conn, country, n) for n in names) if c}
-        candidates = [c for c in self._candidates(conn, league_code, is_cup, country) if source not in c.sources]
+        football = sport == "football"            # warianty nazw (team_seeds, openfootball/clubs) – kluby piłkarskie
+        groups = {g for g in (seed_group(n) for n in names) if g is not None} if football else set()
+        clubs = {c for c in (self._club(conn, country, n) for n in names) if c} if football else set()
+        candidates = [c for c in self._candidates(conn, league_code, is_cup, country if football else "", sport)
+                      if source not in c.sources]
 
         for cand in candidates:
             if any(n in cand.names for n in norms):
@@ -217,9 +225,12 @@ class TeamMatcher:
 
     # -- pomocnicze -------------------------------------------------------------
     def _candidates(self, conn: sqlite3.Connection, league_code: str, is_cup: bool,
-                    country: str = "") -> list[_Candidate]:
+                    country: str = "", sport: str = "football") -> list[_Candidate]:
         if is_cup:
-            rows = conn.execute("SELECT team_id, source, name, league_code FROM team_aliases").fetchall()
+            rows = conn.execute(
+                "SELECT a.team_id, a.source, a.name, a.league_code FROM team_aliases a "
+                "LEFT JOIN leagues l ON l.code = a.league_code WHERE COALESCE(l.sport, 'football') = ?",
+                (sport,)).fetchall()
         else:
             rows = conn.execute(
                 "SELECT team_id, source, name, league_code FROM team_aliases WHERE league_code = ?",
@@ -229,7 +240,7 @@ class TeamMatcher:
         for r in rows:
             cand = by_team.setdefault(r["team_id"], _Candidate(r["team_id"], set(), set(), set()))
             cand.names.add(normalize(r["name"]))
-            group = seed_group(r["name"])
+            group = seed_group(r["name"]) if sport == "football" else None
             if group is not None:
                 cand.groups.add(group)
             club = self._club(conn, country, r["name"])

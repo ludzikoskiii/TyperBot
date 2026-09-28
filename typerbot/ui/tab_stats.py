@@ -127,7 +127,7 @@ class BacktestView(QWidget):
         settings = self.ctx.settings()
         self.leagues.clear()
         for lg in self.ctx.sync.leagues.all(enabled_only=True):
-            if lg.is_cup:
+            if lg.is_cup or lg.sport != "football":      # backtest modelu piłkarskiego (Dixon-Coles + Elo)
                 continue
             item = QListWidgetItem(lg.name)
             item.setData(Qt.UserRole, lg.code)

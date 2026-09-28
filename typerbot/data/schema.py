@@ -284,4 +284,12 @@ MIGRATIONS.append(
     """
 )
 
+# --- v8: inne dyscypliny (futbol amerykański, baseball, piłka ręczna, hokej…) --------------------------------
+MIGRATIONS.append(
+    """
+    ALTER TABLE leagues ADD COLUMN sport TEXT NOT NULL DEFAULT 'football';
+    ALTER TABLE leagues ADD COLUMN feed TEXT;
+    """
+)
+
 SCHEMA_VERSION = len(MIGRATIONS)

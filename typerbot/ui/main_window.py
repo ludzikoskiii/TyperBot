@@ -23,7 +23,7 @@ from typerbot.ui.workers import run_in_background
 
 STATE_COLORS = {"ok": theme.POSITIVE, "idle": theme.MUTED, "offline": theme.WARNING, "error": theme.NEGATIVE,
                 "disabled": theme.MUTED}
-STATUS_SOURCES = ("football_data_csv", "openfootball", "openligadb", "international")   # na pasku stanu
+STATUS_SOURCES = ("football_data_csv", "openfootball", "openligadb", "international", "nflverse", "mlb")  # na pasku
 
 
 class MainWindow(QMainWindow):

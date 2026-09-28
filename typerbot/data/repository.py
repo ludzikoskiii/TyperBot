@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from typerbot.config.leagues import DEFAULT_LEAGUES, League
+from typerbot.config.sports import FOOTBALL
 from typerbot.data.db import Database
 from typerbot.data.records import (
     FINAL_STATUSES, FINISHED, LIVE, SCHEDULED,
@@ -25,7 +26,7 @@ from typerbot.data.teams import TeamMatcher
 MATCH_WINDOW = timedelta(hours=36)
 # Pewność godziny rozpoczęcia według źródła: godzina z pewniejszego źródła nie jest nadpisywana
 # godziną z mniej pewnego (np. terminarz openfootball bywa aktualizowany z opóźnieniem).
-KICKOFF_RANK = {"openligadb": 3, "football_data_csv": 2, "openfootball": 1}
+KICKOFF_RANK = {"openligadb": 3, "mlb": 3, "football_data_csv": 2, "nflverse": 2, "openfootball": 1}
 
 
 @dataclass
@@ -35,10 +36,10 @@ class UpsertResult:
 
 
 _LEAGUE_COLUMNS = ("code", "name", "country", "is_cup", "fdcuk_code", "fdcuk_format", "enabled", "sort_order",
-                   "openfootball", "openligadb", "season_style", "timezone", "tier", "national")
+                   "openfootball", "openligadb", "season_style", "timezone", "tier", "national", "sport", "feed")
 # Pola katalogu aktualizowane przy każdym uruchomieniu (identyfikatory w źródłach); nazwa i „aktywna” – nie.
 _SOURCE_COLUMNS = ("country", "is_cup", "fdcuk_code", "fdcuk_format", "openfootball", "openligadb", "season_style",
-                   "timezone", "tier", "national")
+                   "timezone", "tier", "national", "sport", "feed")
 _BOOL_COLUMNS = ("is_cup", "enabled", "national")
 
 
@@ -179,10 +180,11 @@ class MatchRepository:
     def _upsert(self, conn: sqlite3.Connection, rec: MatchRecord, league: League | None) -> UpsertResult:
         is_cup = bool(league and league.is_cup)
         country = league.country if league else ""
+        sport = league.sport if league else FOOTBALL
         home = self.matcher.resolve(conn, rec.source, rec.league_code, rec.home, hints=rec.home_hints,
-                                    is_cup=is_cup, country=country).team_id
+                                    is_cup=is_cup, country=country, sport=sport).team_id
         away = self.matcher.resolve(conn, rec.source, rec.league_code, rec.away, hints=rec.away_hints,
-                                    is_cup=is_cup, country=country).team_id
+                                    is_cup=is_cup, country=country, sport=sport).team_id
         now = to_iso(datetime.now(timezone.utc))
         rank = KICKOFF_RANK.get(rec.source, 0) if rec.kickoff_exact and rec.status not in FINAL_STATUSES else 0
 
@@ -191,7 +193,9 @@ class MatchRepository:
             "WHERE s.source = ? AND s.external_id = ?",
             (rec.source, rec.external_id),
         ).fetchone()
-        if row is None:
+        # Ten sam mecz z innego źródła szukamy po drużynach i dacie – tylko w piłce nożnej (kilka źródeł jednej ligi).
+        # W innych dyscyplinach ligę daje jedno źródło, a te same drużyny grają dzień po dniu (serie w baseballu).
+        if row is None and sport == FOOTBALL:
             lo, hi = to_iso(rec.kickoff - MATCH_WINDOW), to_iso(rec.kickoff + MATCH_WINDOW)
             row = conn.execute(
                 "SELECT * FROM matches WHERE league_code = ? AND home_team_id = ? AND away_team_id = ? "

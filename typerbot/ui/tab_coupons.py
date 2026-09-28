@@ -1,4 +1,4 @@
-"""Zakładka „Kupony” – prosty ekran główny: kurs docelowy, zakres dat, „Generuj kupony” i 3 kupony
+"""Zakładka „Kupony” – prosty ekran główny: kurs docelowy, zakres dat, dyscypliny, „Generuj kupony” i kupony
 w stylu kuponu bukmacherskiego. Pozostałe opcje są w zwiniętej sekcji „Zaawansowane”,
 a lista wszystkich meczów z ocenami typów – pod przyciskiem „Wszystkie mecze”."""
 
@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
 
 from typerbot.betting.evaluation import ESTIMATED_NOTE
 from typerbot.config.settings import MARKETS, CouponSettings
+from typerbot.config.sports import SPORT_ORDER, sport_label, sport_of
 from typerbot.fmt import num, pct, plural, signed_pct
+from typerbot.model.markets import MARKET_HINTS, MARKET_NAMES
 from typerbot.services.coupons import (
     LETTERS, Coupon, CouponLeg, CouponService, GenerationResult, SwapOption, kickoff_local,
 )
@@ -28,7 +30,6 @@ from typerbot.ui.tab_matches import MatchesTab
 from typerbot.ui.widgets import NumItem, ProbabilityDelegate, hbox, label, make_table, prob_item, set_role, text_item
 from typerbot.ui.workers import run_in_background
 
-MARKET_NAMES = {"1X2": "1X2", "DC": "Podwójna szansa", "OU": "Powyżej/poniżej 2,5", "BTTS": "Obie strzelą"}
 WEEKDAYS = ["pon", "wt", "śr", "czw", "pt", "sob", "nd"]
 
 
@@ -41,14 +42,23 @@ def when(iso: str) -> str:
     return f"{WEEKDAYS[dt.weekday()]} {dt.strftime('%d.%m %H:%M')}"
 
 
+def leg_place(m, league_name: str) -> str:
+    """Liga na kuponie – w innych dyscyplinach z krótką nazwą dyscypliny („Hokej · DEL”; NFL i MLB bez niej)."""
+    if m.sport == "football" or m.league in ("NFL", "MLB"):
+        return league_name
+    return f"{sport_of(m.sport).short} · {league_name}"
+
+
 def coupon_text(coupon: Coupon, letter: str, league_names: dict[str, str]) -> str:
     """Kupon jako tekst do wklejenia (np. w notatkę albo do bukmachera)."""
     lines = [f"TyperBot – kupon {letter}"]
     for i, leg in enumerate(coupon.legs, 1):
         s, m = leg.selection, leg.match
         est = f" ({ESTIMATED_NOTE})" if s.estimated else ""
-        lines.append(f"{i}. {m.home} – {m.away} ({league_names.get(m.league, m.league)}, {when(m.kickoff)}): "
-                     f"{s.label} @ {num(s.odds or 1.0)}{est}")
+        where = league_names.get(m.league, m.league)
+        if m.sport != "football":
+            where = f"{sport_label(m.sport)}, {where}"
+        lines.append(f"{i}. {m.home} – {m.away} ({where}, {when(m.kickoff)}): {s.label} @ {num(s.odds or 1.0)}{est}")
     lines.append(f"Kurs łączny: {num(coupon.odds)} (po podatku {num(coupon.odds_after_tax)})")
     lines.append(f"Szansa trafienia: {pct(coupon.probability, 1)}")
     if coupon.estimated_legs:
@@ -89,7 +99,7 @@ class LegRow(QFrame):
         self.setProperty("role", "leg")
         s, m = leg.selection, leg.match
         estimated = s.estimated
-        head = label(f"{league_name} · {when(m.kickoff)}", "muted")
+        head = label(f"{leg_place(m, league_name)} · {when(m.kickoff)}", "muted", wrap=True)
         menu_btn = QToolButton()
         menu_btn.setText("⋯")
         menu_btn.setToolTip("Wymień zdarzenie, zmień kurs, usuń, szczegóły")
@@ -115,7 +125,11 @@ class LegRow(QFrame):
         lay.setContentsMargins(10, 8, 10, 8)
         lay.setVerticalSpacing(3)
         lay.setColumnStretch(0, 1)
-        lay.addLayout(hbox(head, None, menu_btn, spacing=4), 0, 0, 1, 2)
+        top = QHBoxLayout()
+        top.setSpacing(4)
+        top.addWidget(head, 1)            # nagłówek zajmuje całą szerokość – zawija się dopiero, gdy trzeba
+        top.addWidget(menu_btn, 0, Qt.AlignTop)
+        lay.addLayout(top, 0, 0, 1, 2)
         lay.addWidget(teams, 1, 0, 1, 2)
         lay.addWidget(pick, 2, 0)
         lay.addWidget(odds, 2, 1, Qt.AlignRight)
@@ -415,6 +429,11 @@ class CouponsTab(QWidget):
         cr.addWidget(self.date_from, 1)
         cr.addWidget(label("do"))
         cr.addWidget(self.date_to, 1)
+        self.sports_box = QWidget()            # dyscypliny z danymi – pola wyboru budowane z bazy
+        self.sports_grid = QGridLayout(self.sports_box)
+        self.sports_grid.setContentsMargins(0, 0, 0, 0)
+        self.sports_grid.setVerticalSpacing(2)
+        self.sport_checks: dict[str, QCheckBox] = {}
         self.generate_btn = QPushButton("Generuj kupony")
         self.generate_btn.setProperty("role", "big")
         self.status = label("", "muted", wrap=True)
@@ -458,6 +477,8 @@ class CouponsTab(QWidget):
         self.leagues = LeagueTree()
         self.leagues.setMinimumHeight(240)
         self.markets = {m: QCheckBox(MARKET_NAMES[m]) for m in MARKETS}
+        for m, cb in self.markets.items():
+            cb.setToolTip(MARKET_HINTS[m])
         self.low_data = QCheckBox("Dopuść drużyny z małą liczbą danych")
         self.estimated = QComboBox()
         self.estimated.addItem("gdy brak innych", "fallback")
@@ -511,6 +532,9 @@ class CouponsTab(QWidget):
         pl.addWidget(label("Mecze", "section"))
         pl.addLayout(range_grid)
         pl.addWidget(self.custom_row)
+        self.sports_title = label("Dyscypliny", "section")
+        pl.addWidget(self.sports_title)
+        pl.addWidget(self.sports_box)
         pl.addSpacing(6)
         pl.addWidget(self.generate_btn)
         pl.addWidget(self.status)
@@ -625,17 +649,49 @@ class CouponsTab(QWidget):
         self.estimated.setCurrentIndex(max(0, self.estimated.findData(c.estimated_odds)))
         self.count.setValue(c.alternatives)
         self.difference.setCurrentIndex(0 if c.min_difference >= 0.5 else 1)
-        self.load_leagues(c.leagues)
+        self.load_leagues(c.leagues, list(c.sports))
         for m, cb in self.markets.items():
             cb.setChecked(m in c.markets)
             cb.setEnabled(m in settings.markets_enabled)
 
-    def load_leagues(self, selected: list[str] | None = None) -> None:
+    def load_leagues(self, selected: list[str] | None = None, sports: list[str] | None = None) -> None:
         """Ligi z danymi (aktywne w ustawieniach) – lista budowana z bazy przy każdym odświeżeniu."""
         keep = selected if selected is not None else (None if self.leagues.all_checked() else
                                                       self.leagues.checked_codes())
+        wanted = sports if sports is not None else self.selected_sports()
         rows = [r for r in self.ctx.sync.leagues.with_counts(self.ctx.now()) if r.league.enabled]
         self.leagues.set_leagues(rows, keep or None)
+        self._build_sports(wanted)
+
+    # -- dyscypliny ---------------------------------------------------------------------------------
+    def _build_sports(self, wanted: list[str] | None) -> None:
+        """Pola wyboru dyscyplin, dla których są ligi z danymi (`wanted` – zaznaczone; puste/None – wszystkie)."""
+        present = self.leagues.sports() or ["football"]
+        for cb in self.sport_checks.values():
+            self.sports_grid.removeWidget(cb)
+            cb.hide()                    # usunięcie następuje dopiero w pętli zdarzeń
+            cb.deleteLater()
+        self.sport_checks = {}
+        for i, code in enumerate(present):
+            cb = QCheckBox(sport_label(code))
+            cb.setChecked(not wanted or code in wanted)
+            cb.toggled.connect(self._sports_changed)
+            self.sport_checks[code] = cb
+            self.sports_grid.addWidget(cb, i // 2, i % 2)
+        several = len(present) > 1
+        self.sports_title.setVisible(several)
+        self.sports_box.setVisible(several)
+        self._sports_changed()
+
+    def selected_sports(self) -> list[str]:
+        """Zaznaczone dyscypliny ([] – wszystkie)."""
+        if not self.sport_checks or all(cb.isChecked() for cb in self.sport_checks.values()):
+            return []
+        return [code for code in SPORT_ORDER if code in self.sport_checks and self.sport_checks[code].isChecked()]
+
+    def _sports_changed(self, *_args) -> None:
+        chosen = self.selected_sports()
+        self.leagues.set_sports(chosen or None)
 
     def current_cfg(self) -> CouponSettings:
         base = self.ctx.settings().coupon
@@ -651,6 +707,7 @@ class CouponsTab(QWidget):
             min_probability=self.min_prob.value() / 100, mode=self.mode.currentData(),
             max_divergence=self.divergence.value() / 100,
             leagues=[] if all_leagues else leagues, markets=[m for m, cb in self.markets.items() if cb.isChecked()],
+            sports=self.selected_sports(),
             include_low_data=self.low_data.isChecked(), estimated_odds=self.estimated.currentData(),
             alternatives=self.count.value(),
             min_difference=base.min_difference if (base.min_difference >= 0.5) == (self.difference.currentData() >= 0.5)
@@ -670,6 +727,9 @@ class CouponsTab(QWidget):
         cfg = self.current_cfg()
         if not cfg.markets:
             self.status.setText("Zaznacz co najmniej jeden rynek (Zaawansowane).")
+            return
+        if self.sport_checks and not any(cb.isChecked() for cb in self.sport_checks.values()):
+            self.status.setText("Zaznacz co najmniej jedną dyscyplinę.")
             return
         self.busy = True
         self.generate_btn.setEnabled(False)

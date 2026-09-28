@@ -13,7 +13,12 @@ Role źródeł:
     football-data.co.uk nie opublikował jeszcze pliku, np. w poniedziałek na środę);
   * OpenLigaDB – ligi niemieckie (Bundesliga 1–3, Puchar Niemiec) na bieżąco;
   * international_results – wyniki reprezentacji (ranking Elo);
-  * openfootball/clubs – warianty nazw klubów (ujednolicanie nazw między źródłami).
+  * openfootball/clubs – warianty nazw klubów (ujednolicanie nazw między źródłami);
+  * nflverse – NFL: terminarz sezonu, wyniki i kursy (jeden plik);
+  * MLB Stats API – baseball: terminarz i wyniki;
+  * OpenLigaDB (ligi społeczności) – piłka ręczna, hokej, piłka nożna kobiet i niższe ligi niemieckie:
+    listę lig sprawdzamy raz w tygodniu; ligę dopisujemy, gdy ma aktualny terminarz i nie powtarza
+    ligi, którą już mamy (np. kopii 3. Ligi).
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import time
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from typerbot.config.leagues import FDCUK_EXTRA_COUNTRIES, League, season_of
 from typerbot.config.secrets import REMOVED_SOURCES, SecretStore
@@ -38,9 +43,11 @@ from typerbot.data.ratelimit import RateLimiter
 from typerbot.data.records import SCHEDULED, MatchRecord
 from typerbot.data.repository import LeagueRepository, MatchRepository
 from typerbot.data.sources import (
-    SOURCE_ROLES, ApiSource, ClubNames, FootballDataCsv, InternationalResults, OpenFootball, OpenLigaDb,
+    SOURCE_ROLES, ApiSource, ClubNames, FootballDataCsv, InternationalResults, MlbStatsApi, Nflverse, OpenFootball,
+    OpenLigaDb,
 )
 from typerbot.data.sources.club_names import CLUB_FILES
+from typerbot.data.sources.openligadb import AvailableLeague, clean_name, guess_country, is_cup, is_junk
 from typerbot.data.teams import normalize
 
 log = logging.getLogger(__name__)
@@ -52,7 +59,11 @@ MISSING_FILE_RETRY = DAY               # brak pliku sezonu w źródle – ponown
 CLUB_NAMES_REFRESH = 30 * DAY          # warianty nazw klubów zmieniają się rzadko
 INTERNATIONAL_TTL = 3 * DAY            # zbiór wyników reprezentacji aktualizowany ok. raz w miesiącu
 INTERNATIONAL_SINCE_YEARS = 12         # historia reprezentacji do rankingu Elo
-EXTRA_HISTORY_SEASONS = 3              # historia lig spoza football-data.co.uk (openfootball, OpenLigaDB)
+EXTRA_HISTORY_SEASONS = 3              # historia lig spoza football-data.co.uk (openfootball, OpenLigaDB, MLB)
+DISCOVERY_REFRESH = 7 * DAY            # lista lig OpenLigaDB – raz w tygodniu
+MAX_DISCOVERED = 40                    # najwyżej tyle nowych lig OpenLigaDB sprawdzamy naraz
+DISCOVERED_PREFIX = "OL-"              # kody lig dopisanych z OpenLigaDB
+MLB_DAYS_BACK, MLB_DAYS_AHEAD = 3, 10  # okno terminarza MLB przy każdym odświeżeniu
 _SEVERITY = {"ok": 0, "skipped": 0, "offline": 2, "error": 4}
 
 
@@ -155,8 +166,11 @@ class SyncService:
         self.openligadb = OpenLigaDb(self.http, self.quota, clock=clock)
         self.international = InternationalResults(self.http, self.quota, clock=clock)
         self.club_names = ClubNames(self.http, self.quota, clock=clock)
+        self.nflverse = Nflverse(self.http, self.quota, clock=clock)
+        self.mlb = MlbStatsApi(self.http, self.quota, clock=clock)
         self.sources: dict[str, ApiSource] = {
-            s.name: s for s in (self.csv, self.openfootball, self.openligadb, self.international, self.club_names)
+            s.name: s for s in (self.csv, self.openfootball, self.openligadb, self.international, self.club_names,
+                                self.nflverse, self.mlb)
         }
         if not rate_limits:  # transport lokalny (demo, testy) – bez czekania między zapytaniami
             for src in self.sources.values():
@@ -202,7 +216,8 @@ class SyncService:
     def enabled_sources(self, settings: Settings | None = None) -> dict[str, bool]:
         sync = (settings or self.settings()).sync
         return {self.csv.name: True, self.openfootball.name: sync.openfootball, self.openligadb.name: sync.openligadb,
-                self.international.name: sync.international, self.club_names.name: True}
+                self.international.name: sync.international, self.club_names.name: True,
+                self.nflverse.name: sync.nflverse, self.mlb.name: sync.mlb}
 
     def _step(self, report: SyncReport, source: ApiSource, step: str, league: League | None,
               fn: Callable[[], int], detail: str = "") -> int | None:
@@ -333,9 +348,16 @@ class SyncService:
                     plan.append((i, lambda lg=league, s=season, past=i > 0: self._csv_main(report, lg, s, past)))
             elif league.fdcuk_format == "extra" and league.fdcuk_code:
                 plan.append((0, lambda lg=league: self._csv_extra(report, lg, n_csv)))
+            elif league.feed == "mlb":
+                if use[self.mlb.name]:
+                    for i, season in enumerate(self._seasons(league, EXTRA_HISTORY_SEASONS)):
+                        plan.append((i, lambda lg=league, s=season, past=i > 0: self._season_file(
+                            report, self.mlb, lg, s, past)))
+            elif league.feed:           # NFL – historia przychodzi razem z terminarzem (jeden plik)
+                continue
             else:     # ligi spoza football-data.co.uk – historia z openfootball albo OpenLigaDB
                 for i, season in enumerate(self._seasons(league, EXTRA_HISTORY_SEASONS)):
-                    if league.openligadb and use[self.openligadb.name]:
+                    if league.openligadb and self._use_openligadb(league, settings):
                         plan.append((i, lambda lg=league, s=season, past=i > 0: self._season_file(
                             report, self.openligadb, lg, s, past)))
                     elif league.openfootball and use[self.openfootball.name]:
@@ -475,13 +497,105 @@ class SyncService:
             log.info("Nowe ligi w plikach football-data.co.uk: %s", ", ".join(discovered))
 
         for league in self.leagues.all(enabled_only=True):
+            if league.feed == "nflverse" and use[self.nflverse.name]:
+                self._nfl(report, league, ttl)
+            elif league.feed == "mlb" and use[self.mlb.name]:
+                day = now.date()
+                self._step(report, self.mlb, "fixtures", league, lambda lg=league, d=day: self._save(self.mlb.schedule(
+                    d - timedelta(days=MLB_DAYS_BACK), d + timedelta(days=MLB_DAYS_AHEAD), ttl=ttl, league=lg.code)))
             for season in self._fixture_seasons(league, now):
-                if league.openligadb and use[self.openligadb.name]:
+                if league.openligadb and self._use_openligadb(league, settings):
                     self._season_file(report, self.openligadb, league, season, past=False, refresh=ttl,
                                       step="fixtures")
                 if league.openfootball and use[self.openfootball.name]:
                     self._season_file(report, self.openfootball, league, season, past=False,
                                       refresh=CURRENT_SEASON_REFRESH, step="fixtures")
+        # Nowe ligi OpenLigaDB – po terminarzu lig z katalogu (kopię ligi z bazy rozpoznajemy po drużynach).
+        if use[self.openligadb.name] and settings.sync.openligadb_more:
+            self._discover_openligadb(report, now)
+
+    def _use_openligadb(self, league: League, settings: Settings) -> bool:
+        """Ligi z katalogu – gdy OpenLigaDB włączone; ligi dopisane z listy serwisu – gdy włączone też „więcej lig”."""
+        use = self.enabled_sources(settings)
+        return use[self.openligadb.name] and (not league.code.startswith(DISCOVERED_PREFIX)
+                                              or settings.sync.openligadb_more)
+
+    def _nfl(self, report: SyncReport, league: League, ttl: float) -> None:
+        """NFL: jeden plik z terminarzem, wynikami i kursami. Zakończone sezony zapisujemy raz."""
+        current = league.season_at(self.now())
+        since = current - max(1, self.settings().sync.csv_seasons) + 1
+
+        def fetch() -> int:
+            by_season: dict[int, list[MatchRecord]] = {}
+            for rec in self.nflverse.games(since, ttl=ttl):
+                by_season.setdefault(rec.season, []).append(rec)
+            count = 0
+            for season, records in sorted(by_season.items(), reverse=True):
+                row = self._file_row(self.nflverse.name, league.code, season)
+                if row is not None and row["complete"]:
+                    continue
+                count += self._save(records)
+                done = season < current and all(r.status != SCHEDULED for r in records)
+                self._mark_file(self.nflverse.name, league.code, season, len(records), complete=done)
+            return count
+
+        self._step(report, self.nflverse, "fixtures", league, fetch, detail="games.csv")
+
+    # -- ligi społeczności OpenLigaDB --------------------------------------------------------------
+    def _discover_openligadb(self, report: SyncReport, now: datetime) -> None:
+        """Nowe ligi z listy OpenLigaDB (piłka ręczna, hokej, piłka nożna kobiet, niższe ligi niemieckie).
+        Ligę dopisujemy, gdy ma bieżący terminarz (min. 6 drużyn, 20 meczów, mecze w najbliższych tygodniach)
+        i nie powtarza ligi, którą już mamy. Odrzucone ligi pamiętamy – nie pytamy o nie co tydzień."""
+        if self.meta("openligadb.discovered_at", 0) > self.clock() - DISCOVERY_REFRESH \
+                and not self.openligadb.force_refresh:
+            return
+
+        def fetch() -> int:
+            available = self.openligadb.available(ttl=DISCOVERY_REFRESH)
+            known = {lg.openligadb for lg in self.leagues.all() if lg.openligadb}
+            rejected: dict[str, int] = self.meta("openligadb.rejected", {}) or {}
+            seasons = {season_of(now.year, now.month), now.year}
+            latest: dict[str, AvailableLeague] = {}
+            for a in available:
+                if a.shortcut in known or a.season not in seasons or is_junk(a.name):
+                    continue
+                if a.shortcut not in latest or a.season > latest[a.shortcut].season:
+                    latest[a.shortcut] = a
+            candidates = [a for a in latest.values() if rejected.get(a.shortcut) != a.season][:MAX_DISCOVERED]
+            added = 0
+            for a in candidates:
+                country = guess_country(a.name)
+                if a.sport == "football" and country != "Niemcy":
+                    rejected[a.shortcut] = a.season      # ligi zagraniczne są z football-data.co.uk i openfootball
+                    continue
+                league = League(f"{DISCOVERED_PREFIX}{a.shortcut.upper()}", clean_name(a.name), country,
+                                is_cup=is_cup(a.name), openligadb=a.shortcut, timezone="Europe/Berlin",
+                                tier=_tier(a.name), sport=a.sport)
+                records = self.openligadb.season(league, a.season, ttl=CURRENT_SEASON_REFRESH)
+                if not _active(records, now) or self._duplicate(records, a.sport):
+                    rejected[a.shortcut] = a.season
+                    continue
+                self.leagues.add_discovered(league)
+                self._save(records)
+                self._mark_file(self.openligadb.name, league.code, a.season, len(records), complete=False)
+                added += 1
+            self.set_meta("openligadb.rejected", rejected)
+            self.set_meta("openligadb.discovered_at", self.clock())
+            return added
+
+        self._step(report, self.openligadb, "discover", None, fetch, detail="lista lig")
+
+    def _duplicate(self, records: list[MatchRecord], sport: str) -> bool:
+        """Liga powtarza ligę z bazy (np. kopia 3. Ligi prowadzona przez innego użytkownika): co najmniej połowa
+        drużyn ma te same nazwy co drużyny jednej ligi tej samej dyscypliny."""
+        teams = {normalize(n) for r in records for n in (r.home, r.away)}
+        if not teams:
+            return False
+        by_league: dict[str, set[str]] = {}
+        for r in self.db.query("SELECT a.league_code, a.name FROM team_aliases a JOIN leagues l ON l.code = "
+                               "a.league_code WHERE l.sport = ?", (sport,)):
+            by_league.setdefault(r["league_code"], set()).add(normalize(r["name"]))
+        return any(len(teams & names) >= 0.5 * len(teams) for names in by_league.values())
 
     @staticmethod
     def _fixture_seasons(league: League, now: datetime) -> list[int]:
@@ -530,6 +644,22 @@ class SyncService:
         """Chwila ostatniej udanej aktualizacji głównego źródła (terminarz z kursami)."""
         st = self.status.get(self.csv.name)
         return st.last_ok if st else None
+
+
+def _active(records: list[MatchRecord], now: datetime) -> bool:
+    """Prawdziwe, trwające rozgrywki: min. 6 drużyn i 20 meczów, mecze w ostatnim miesiącu albo najbliższych
+    dwóch miesiącach."""
+    teams = {n for r in records for n in (r.home, r.away)}
+    near = any(now - timedelta(days=30) <= r.kickoff <= now + timedelta(days=60) for r in records)
+    return len(teams) >= 6 and len(records) >= 20 and near
+
+
+def _tier(name: str) -> int:
+    text = name.lower()
+    for word, tier in (("oberliga", 5), ("regionalliga", 4), ("3.", 3), ("dritte", 3), ("2.", 2), ("zweite", 2)):
+        if word in text:
+            return tier
+    return 1
 
 
 __all__ = ["SourceRow", "StepResult", "SyncReport", "SyncService", "load_last_report"]

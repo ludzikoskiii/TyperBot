@@ -13,9 +13,10 @@ from typing import Any, TypeVar
 
 from typerbot.data.db import Database
 
-MARKETS = ("1X2", "DC", "OU", "BTTS")
+MARKETS = ("1X2", "DC", "ML", "HCP", "OU", "BTTS")
+NEW_MARKETS_V5 = ("ML", "HCP")      # rynki innych dyscyplin (zwycięzca z dogrywką, handicap)
 
-SETTINGS_VERSION = 4
+SETTINGS_VERSION = 5
 
 # Wersja 2: wartości domyślne po kalibracji modelu (README, „Kalibracja modelu”). Zapisane ustawienia
 # z wersji 1 przenosimy tylko wtedy, gdy użytkownik zostawił starą wartość domyślną – własnych nie ruszamy.
@@ -88,6 +89,7 @@ class CouponSettings:
     date_from: str = ""               # zakres własny (RRRR-MM-DD), gdy date_range == 'custom'
     date_to: str = ""
     leagues: list[str] = field(default_factory=list)   # puste = wszystkie włączone ligi
+    sports: list[str] = field(default_factory=list)    # dyscypliny (puste = wszystkie)
     markets: list[str] = field(default_factory=lambda: list(MARKETS))
     include_low_data: bool = False
     min_difference: float = 0.5      # kupony różnią się min. połową meczów (0 = co najmniej jednym meczem)
@@ -101,6 +103,9 @@ class SyncSettings:
     openfootball: bool = True             # terminarz z wyprzedzeniem (openfootball)
     openligadb: bool = True               # ligi niemieckie na bieżąco (OpenLigaDB)
     international: bool = True            # reprezentacje (international_results)
+    nflverse: bool = True                 # futbol amerykański – NFL (nflverse: terminarz, wyniki, kursy)
+    mlb: bool = True                      # baseball – MLB (MLB Stats API)
+    openligadb_more: bool = True          # więcej lig i dyscyplin z OpenLigaDB (piłka ręczna, hokej…)
 
 
 @dataclass
@@ -142,6 +147,10 @@ def migrate(data: dict[str, Any]) -> bool:
             part = data.get(section)
             if isinstance(part, dict) and name in part and _same(part[name], old):
                 part[name] = new
+    if version < 5:        # nowe rynki innych dyscyplin – włączone także przy zapisanym wyborze rynków
+        for part, name in ((data.get("coupon"), "markets"), (data, "markets_enabled")):
+            if isinstance(part, dict) and isinstance(part.get(name), list):
+                part[name] = [m for m in MARKETS if m in part[name] or m in NEW_MARKETS_V5]
     if version < 3:
         coupon, odds = data.get("coupon"), data.get("odds")
         if isinstance(coupon, dict) and "allow_estimated_odds" in coupon:

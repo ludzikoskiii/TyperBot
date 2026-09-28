@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from typerbot.betting.evaluation import SelectionEval
 from typerbot.config.settings import Settings
+from typerbot.config.sports import football_like, sport_of
 from typerbot.data.db import Database
 from typerbot.fmt import num as _fnum, pct as _pct, plural, signed_pct
 
@@ -89,6 +90,55 @@ def _num(x: float) -> str:
     return _fnum(x, 1)
 
 
+def recent_scores(db: Database, team_id: int, before: str, limit: int = 10) -> list[tuple[int, int]]:
+    """(zdobyte, stracone) w ostatnich meczach drużyny – do uzasadnień w innych dyscyplinach."""
+    rows = db.query(
+        "SELECT home_team_id, home_goals, away_goals FROM matches WHERE (home_team_id = ? OR away_team_id = ?) "
+        "AND status = 'FINISHED' AND home_goals IS NOT NULL AND kickoff < ? ORDER BY kickoff DESC LIMIT ?",
+        (team_id, team_id, before, limit))
+    return [(r["home_goals"], r["away_goals"]) if r["home_team_id"] == team_id else (r["away_goals"], r["home_goals"])
+            for r in rows]
+
+
+def _share(values: list[bool]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _signed(x: float) -> str:
+    return f"{x:+.1f}".replace(".", ",").replace("-", "−")
+
+
+def _edge(sport, home: str, away: str, lam_home: float, lam_away: float) -> str:
+    """„Model: Kiel lepszy średnio o 2,4 bramki” (przewaga w oczekiwanym wyniku)."""
+    diff = lam_home - lam_away
+    if abs(diff) < 0.05:
+        return "Model: wyrównany mecz"
+    return f"Model: {home if diff > 0 else away} lepszy średnio o {_num(abs(diff))} {sport.unit_frac}"
+
+
+def _sport_line(db: Database, sel: SelectionEval, match: dict, lam_home: float, lam_away: float) -> str:
+    """Zdanie o liczbach modelu i ostatnich meczach dla dyscyplin innych niż piłka nożna."""
+    sport = sport_of(match.get("sport"))
+    home, away, before = match["home"], match["away"], match["kickoff"]
+    unit = sport.unit[2]
+    market, line = sel.key[0], sel.key[2]
+    hs, as_ = recent_scores(db, match["home_id"], before), recent_scores(db, match["away_id"], before)
+    if market == "OU":
+        over_h = _share([f + a > line for f, a in hs])
+        over_a = _share([f + a > line for f, a in as_])
+        return (f"Oczekiwana suma ({unit}) {_num(lam_home + lam_away)} · powyżej {_num(line)} w ostatnich meczach: "
+                f"{_pct(over_h)} ({home}), {_pct(over_a)} ({away})")
+    if market == "HCP":
+        mh = sum(f - a for f, a in hs) / len(hs) if hs else 0.0
+        ma = sum(f - a for f, a in as_) / len(as_) if as_ else 0.0
+        return (f"{_edge(sport, home, away, lam_home, lam_away)} · średni bilans w ostatnich meczach: "
+                f"{home} {_signed(mh)}, {away} {_signed(ma)}")
+    h2h = head_to_head(db, match["home_id"], match["away_id"], before)
+    h2h_txt = (f"bilans ostatnich spotkań ({h2h.n}): {h2h.home_wins} zw. {home}, {h2h.away_wins} zw. {away}"
+               if h2h.n else "brak wcześniejszych spotkań w bazie")
+    return f"Oczekiwany wynik modelu {_num(lam_home)} : {_num(lam_away)} ({unit}) · {h2h_txt}"
+
+
 def build_rationale(db: Database, sel: SelectionEval, match: dict, lam_home: float, lam_away: float,
                     settings: Settings, flags: list[str] | None = None) -> list[str]:
     """Kilka zdań uzasadnienia dla typu na kuponie.
@@ -118,7 +168,9 @@ def build_rationale(db: Database, sel: SelectionEval, match: dict, lam_home: flo
                  f"{away} na wyjeździe {af.form} (śr. {_num(af.goals_for)}:{_num(af.goals_against)})")
 
     market = sel.key[0]
-    if market in ("1X2", "DC"):
+    if not football_like(match.get("sport")):
+        lines.append(_sport_line(db, sel, match, lam_home, lam_away))
+    elif market in ("1X2", "DC"):
         h2h = head_to_head(db, match["home_id"], match["away_id"], before)
         h2h_txt = (f"bilans ostatnich spotkań ({h2h.n}): {h2h.home_wins} zw. {home}, "
                    f"{plural(h2h.draws, 'remis', 'remisy', 'remisów')}, {h2h.away_wins} zw. {away}"
@@ -144,7 +196,11 @@ def build_rationale(db: Database, sel: SelectionEval, match: dict, lam_home: flo
         lines.append("Średnie xG w ostatnich meczach: " + ", ".join(xg_parts))
     notes = list(flags or [])
     if sel.odds_source == "estimated":
-        notes.append("kurs szacunkowy (wyliczony z kursów 1X2 – brak go w źródłach) – sprawdź ofertę bukmachera")
+        notes.append("kurs szacunkowy (brak go w źródłach – wyliczony z prognozy i innych kursów meczu) – sprawdź "
+                     "ofertę bukmachera")
+    sport = sport_of(match.get("sport"))
+    if not sport.draws and sel.key[0] in ("ML", "HCP", "OU"):
+        notes.append("wynik z dogrywką" + (" (i dodatkowymi zmianami)" if sport.code == "baseball" else ""))
     if notes:
         lines.append("Uwaga: " + "; ".join(notes))
     return lines
@@ -154,6 +210,18 @@ def match_summary(db: Database, match: dict, lam_home: float, lam_away: float) -
     """Ogólny opis meczu (do panelu szczegółów w zakładce „Mecze”)."""
     home, away, before = match["home"], match["away"], match["kickoff"]
     hf, af = team_form(db, match["home_id"], before, "home"), team_form(db, match["away_id"], before, "away")
+    sport = sport_of(match.get("sport"))
+    if not football_like(sport.code):
+        h2h = head_to_head(db, match["home_id"], match["away_id"], before)
+        unit = sport.unit[2]
+        out = [f"{sport.label} · oczekiwany wynik modelu: {_num(lam_home)} : {_num(lam_away)} ({unit})",
+               f"{home} u siebie (5): {hf.form} · śr. {_num(hf.goals_for)}:{_num(hf.goals_against)}",
+               f"{away} na wyjeździe (5): {af.form} · śr. {_num(af.goals_for)}:{_num(af.goals_against)}"]
+        out.append(f"Bilans ostatnich spotkań ({h2h.n}): {h2h.home_wins} zw. {home}, {h2h.away_wins} zw. {away} "
+                   f"({', '.join(h2h.games)})" if h2h.n else "Brak wcześniejszych spotkań tych drużyn w bazie")
+        if not sport.draws:
+            out.append("Zwycięzca, handicap i suma – z dogrywką (tak rozliczają bukmacherzy).")
+        return out
     h10, a10 = team_form(db, match["home_id"], before, None, 10), team_form(db, match["away_id"], before, None, 10)
     h2h = head_to_head(db, match["home_id"], match["away_id"], before)
     lines = [
@@ -188,7 +256,26 @@ def one_liner(db: Database, sel: SelectionEval, match: dict, lam_home: float, la
     def count(form: TeamForm, *codes: str) -> int:
         return sum(r in codes for r in form.results)
 
-    if market == "1X2" and pick == "H":
+    sport = sport_of(match.get("sport"))
+    line = sel.key[2]
+    if not football_like(sport.code) and market in ("ML", "HCP", "OU", "1X2", "DC"):
+        hs, as_ = recent_scores(db, match["home_id"], before), recent_scores(db, match["away_id"], before)
+        if market == "OU":
+            share = _share([f + a > line for f, a in hs + as_])
+            share = share if pick == "O" else 1 - share
+            side = "powyżej" if pick == "O" else "poniżej"
+            stat = (f"oczekiwana suma {_num(lam_home + lam_away)}; {side} {_num(line)} w {_pct(share)} ostatnich "
+                    f"meczów obu drużyn")
+        elif market == "HCP":
+            stat = _edge(sport, home, away, lam_home, lam_away)
+            stat = stat[:1].lower() + stat[1:]
+        elif pick in ("H", "1X"):
+            stat = f"{home} wygrał {count(hf, 'Z')} z {hf.n} ostatnich meczów u siebie"
+        elif pick in ("A", "X2"):
+            stat = f"{away} wygrał {count(af, 'Z')} z {af.n} ostatnich meczów na wyjeździe"
+        else:
+            stat = f"remisy: {home} {count(hf, 'R')} z {hf.n}, {away} {count(af, 'R')} z {af.n}"
+    elif market == "1X2" and pick == "H":
         stat = f"{home} wygrał {count(hf, 'Z')} z {hf.n} ostatnich meczów u siebie"
     elif market == "1X2" and pick == "A":
         stat = f"{away} wygrał {count(af, 'Z')} z {af.n} ostatnich meczów na wyjeździe"

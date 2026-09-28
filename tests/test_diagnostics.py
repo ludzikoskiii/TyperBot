@@ -72,7 +72,7 @@ def ready(db, world, clock):
 @pytest.mark.parametrize("change,expected", [
     ({"min_probability": 0.97}, "szansy co najmniej 97%"),
     ({"target_odds": 5000.0, "max_events": 3}, "najwyższy możliwy kurs"),
-    ({"target_odds": 1.05, "min_events": 3}, ("najniższy możliwy kurs", "górna granica kuponu")),
+    ({"target_odds": 1.05, "min_events": 3, "sports": ["football"]}, ("najniższy możliwy kurs", "górna granica kuponu")),
     ({"min_events": 30, "max_events": 30}, "minimalna liczba zdarzeń to 30"),
     ({"leagues": ["XX"]}, "W wybranych ligach nie ma meczów"),
     ({"date_range": "custom", "date_from": "2027-08-01", "date_to": "2027-08-02"}, "Brak meczów na"),

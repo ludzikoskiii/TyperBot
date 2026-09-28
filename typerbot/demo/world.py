@@ -5,6 +5,8 @@ prawdziwą siłą drużyn, wynikami z rozkładu Poissona i kursami kilku bukmach
 w różne dni tygodnia (także we wtorek i środę), a czołowe ligi mają przerwy reprezentacyjne
 (jak w kalendarzu FIFA 2026: 21.09–06.10) – wtedy grają tylko niższe ligi i ligi spoza Europy.
 
+Są też inne dyscypliny (typerbot.demo.sports): NFL, MLB, piłka ręczna i hokej.
+
 Każde źródło dostaje inne warianty nazw drużyn – tak jak w rzeczywistości (np. „Man United”
 w football-data.co.uk, „Manchester United FC” w openfootball) – co sprawdza ujednolicanie nazw.
 """
@@ -18,6 +20,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
+
+from typerbot.demo.sports import SPORT_LEAGUES, season_matches
 
 UK = ZoneInfo("Europe/London")
 WARSAW = ZoneInfo("Europe/Warsaw")
@@ -250,7 +254,7 @@ class DemoWorld:
     HOME_ADV = 0.25
 
     def __init__(self, now: datetime | None = None, seasons: int = 7, seed: int = 7,
-                 international_fixtures: bool = False):
+                 international_fixtures: bool = False, other_sports: bool = True):
         self.now = now or datetime.now(timezone.utc)
         self.international_fixtures = international_fixtures
         self._probs: dict[int, dict[str, float]] = {}
@@ -273,6 +277,10 @@ class DemoWorld:
         for m in self._internationals(rng, seq, seasons):
             self.matches.append(m)
             seq += 1
+        if other_sports:
+            for m in self._other_sports(np.random.default_rng(seed + 1), seq, seasons):
+                self.matches.append(m)
+                seq += 1
         self.matches.sort(key=lambda m: m.kickoff)
 
     # -- generowanie ---------------------------------------------------------------
@@ -334,6 +342,24 @@ class DemoWorld:
                         seq += 1
         return out
 
+    def _other_sports(self, rng: np.random.Generator, seq0: int, seasons: int) -> list[DemoMatch]:
+        """NFL, MLB, piłka ręczna i hokej (typerbot.demo.sports)."""
+        out, seq = [], seq0
+        for spec in SPORT_LEAGUES:
+            strengths = {t: (float(rng.normal(0, spec.spread)), float(rng.normal(0, spec.spread))) for t in spec.teams}
+            self.teams[spec.code] = {t: DemoTeam(t, (t, t), a, d) for t, (a, d) in strengths.items()}
+            current = self.now.year if spec.style == "calendar" else (
+                self.now.year if self.now.month >= 7 else self.now.year - 1)
+            n = seasons if spec.code == "NFL" else 4
+            for season in range(current - n + 1, current + 1):
+                for rnd, kickoff, h, a, mh, ma, hs, as_ in season_matches(spec, season, strengths, rng, self.now):
+                    home, away = self.teams[spec.code][h], self.teams[spec.code][a]
+                    noise = {k: float(rng.normal(0, 0.04)) for k in ("H", "A", "S", "O")}
+                    out.append(DemoMatch(spec.code, season, rnd, kickoff, home, away, mh, ma, hs, as_, 0, 0, 0, 0,
+                                         seq, noise))
+                    seq += 1
+        return out
+
     # -- zapytania -------------------------------------------------------------------
     def is_finished(self, m: DemoMatch) -> bool:
         return m.kickoff + timedelta(hours=2) <= self.now
@@ -353,7 +379,7 @@ class DemoWorld:
 
     def enable_leagues(self, leagues) -> None:
         """Aktywne tylko ligi świata demo (+ reprezentacje) – reszta katalogu nie ma danych."""
-        wanted = {spec.code for spec in LEAGUES} | {"INT"}
+        wanted = {spec.code for spec in LEAGUES} | {"INT"} | {spec.code for spec in SPORT_LEAGUES}
         for league in leagues.all():
             leagues.set_enabled(league.code, league.code in wanted)
 

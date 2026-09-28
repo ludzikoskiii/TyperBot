@@ -41,7 +41,7 @@ def test_matches_tab_shows_predictions(window):
     assert tab.table.rowCount() > 0
     assert tab.selected_match_id() is not None
     assert tab.sel_table.rowCount() >= 8                      # wszystkie typy wybranego meczu
-    assert "Oczekiwane gole" in tab.details.text()
+    assert "czekiwan" in tab.details.text()          # „Oczekiwane gole” / „oczekiwany wynik” (inne dyscypliny)
     tab.value_only.setChecked(True)
     assert tab.table.rowCount() <= len(tab.evaluated)
 
@@ -172,7 +172,7 @@ def test_settings_screens_keep_defaults(window):
 def test_settings_roundtrip(window):
     tab = window.settings
     assert not hasattr(tab, "key_edits") and not hasattr(tab, "quota_table")      # bez kluczy i limitów API
-    assert tab.sources_table.rowCount() == 5
+    assert tab.sources_table.rowCount() == 7          # 5 źródeł piłkarskich + NFL i MLB
     tab.model_weight.setValue(45)
     tab.elo_weight.setValue(30)
     tab.estimated_margin.setValue(8)
@@ -241,3 +241,23 @@ def test_coupon_count_setting_and_letters(window):
     cards = tab.cards()
     assert 5 < len(cards) <= 7
     assert [c.letter for c in cards] == list("ABCDEFG"[:len(cards)])
+
+
+def test_sport_checkboxes_filter_leagues_and_coupons(window, app):
+    tab = window.coupons
+    assert {"football", "american_football", "handball", "hockey", "baseball"} <= set(tab.sport_checks)
+    assert tab.current_cfg().sports == []                          # domyślnie wszystkie dyscypliny
+    for code, cb in tab.sport_checks.items():
+        cb.setChecked(code == "hockey")
+    assert tab.current_cfg().sports == ["hockey"]
+    visible = [code for code, item in tab.leagues._leagues.items() if not item.isHidden()]
+    assert visible and all(code.startswith("OL-") for code in visible)   # w drzewie tylko ligi hokejowe
+    tab.target.setValue(3.0)
+    tab.generate()
+    app.processEvents()
+    cards = tab.cards()
+    assert cards and all(leg.match.sport == "hockey" for c in cards for leg in c.coupon.legs)
+    for cb in tab.sport_checks.values():
+        cb.setChecked(False)
+    tab.generate()
+    assert "dyscyplinę" in tab.status.text()
